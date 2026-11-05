@@ -2,6 +2,7 @@
 // Tout est stocké localement dans le navigateur (localStorage).
 
 const STORE_KEY = 'nibrass.v1';
+const APP_VERSION = '1.3 · poids & créatine';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.5.0/+esm';
 
 /* ------------------------------------------------------------------ */
@@ -1625,6 +1626,11 @@ function renderSettings(v) {
       <button class="btn ghost block" style="margin-top:10px" id="s-photos">🧹 Supprimer les miniatures photo</button>
       <button class="btn danger block" style="margin-top:10px" id="s-reset">Tout effacer</button>
     </div>
+    <div class="card">
+      <h3>🔄 Mise à jour</h3>
+      <p class="muted small">Version installée : <b style="color:var(--text)">${APP_VERSION}</b></p>
+      <button class="btn block" id="s-update">🔄 Mettre à jour l’app</button>
+    </div>
     <p class="muted small" style="text-align:center">Astuce : sur iPhone, Partager → « Sur l’écran d’accueil » pour l’utiliser comme une app.</p>`;
 
   $('#s-save', v).addEventListener('click', () => {
@@ -1646,6 +1652,12 @@ function renderSettings(v) {
       if (!state.settings.apiKey) state.settings.apiKey = key;
       save(); render(); toast('Données importées');
     } catch { toast('Fichier invalide'); }
+  });
+  $('#s-update', v).addEventListener('click', async e => {
+    e.target.disabled = true; e.target.textContent = 'Téléchargement…';
+    // Force le téléchargement des derniers fichiers (sans toucher aux données enregistrées).
+    try { await Promise.all(['./', 'index.html', 'app.js', 'style.css', 'manifest.webmanifest'].map(f => fetch(f, { cache: 'reload' }))); } catch { /* hors ligne */ }
+    location.reload();
   });
   $('#s-photos', v).addEventListener('click', () => { state.meals.forEach(m => delete m.thumb); save(); render(); toast('Miniatures supprimées'); });
   $('#s-reset', v).addEventListener('click', () => {
