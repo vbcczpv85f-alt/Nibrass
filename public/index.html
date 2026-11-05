@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nibrass – l'anglais en musique</title>
+  <meta name="theme-color" content="#e8445a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a href="#/" class="brand"><span class="logo">♪</span> Nibrass</a>
+    <span class="streak" id="streak" title="Jours consécutifs">🔥 0</span>
+  </header>
+
+  <main id="view" aria-live="polite"></main>
+
+  <nav class="tabs" aria-label="Navigation">
+    <a href="#/" data-tab="home"><span>🏠</span>Accueil</a>
+    <a href="#/playlist" data-tab="playlist"><span>🎧</span>Playlist</a>
+    <a href="#/grammar" data-tab="grammar"><span>📘</span>Grammaire</a>
+    <a href="#/vocab" data-tab="vocab"><span>🗂️</span>Vocabulaire</a>
+    <a href="#/quiz" data-tab="quiz"><span>⭐</span>Quiz</a>
+    <a href="#/journal" data-tab="journal"><span>📓</span>Journal</a>
+  </nav>
+
+  <div id="toast" role="status"></div>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
