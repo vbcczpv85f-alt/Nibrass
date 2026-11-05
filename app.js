@@ -2,7 +2,7 @@
 // Tout est stocké localement dans le navigateur (localStorage).
 
 const STORE_KEY = 'nibrass.v1';
-const APP_VERSION = '1.5 · onglet protéines';
+const APP_VERSION = '1.6 · calendrier de suivi';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.5.0/+esm';
 
 /* ------------------------------------------------------------------ */
@@ -94,13 +94,15 @@ const defaultState = () => ({
   weights: [],
   creatine: { dose: 10, logs: {} },
   proteinFavs: [],
+  checks: {},
+  checkPrefs: { trainingPerWeek: 4 },
   restPrefs: { compound: 150, isolation: 90, auto: true, sound: true },
   settings: { apiKey: '', model: 'claude-opus-5-5' },
 });
 
 let state = load();
-let currentTab = 'sport';
-let ui = { nutDate: todayISO(), budgetMonth: todayISO().slice(0, 7), budgetTab: 'depenses', sportTab: 'seances', nutTab: 'journal', weightRange: '90' };
+let currentTab = 'suivi';
+let ui = { nutDate: todayISO(), budgetMonth: todayISO().slice(0, 7), budgetTab: 'depenses', sportTab: 'seances', nutTab: 'journal', weightRange: '90', suiviMonth: todayISO().slice(0, 7), suiviFilter: 'all' };
 
 function load() {
   try {
@@ -108,12 +110,13 @@ function load() {
     if (!raw) return defaultState();
     const d = defaultState();
     const s = JSON.parse(raw);
-    return { ...d, ...s, goals: { ...d.goals, ...s.goals }, profile: { ...d.profile, ...s.profile }, redbull: { ...d.redbull, ...s.redbull }, restPrefs: { ...d.restPrefs, ...s.restPrefs }, creatine: { ...d.creatine, ...s.creatine, logs: { ...(s.creatine || {}).logs } }, exSettings: { ...s.exSettings }, settings: { ...d.settings, ...s.settings }, templates: { ...d.templates, ...s.templates } };
+    return { ...d, ...s, goals: { ...d.goals, ...s.goals }, profile: { ...d.profile, ...s.profile }, redbull: { ...d.redbull, ...s.redbull }, restPrefs: { ...d.restPrefs, ...s.restPrefs }, checkPrefs: { ...d.checkPrefs, ...s.checkPrefs }, creatine: { ...d.creatine, ...s.creatine, logs: { ...(s.creatine || {}).logs } }, exSettings: { ...s.exSettings }, settings: { ...d.settings, ...s.settings }, templates: { ...d.templates, ...s.templates } };
   } catch {
     return defaultState();
   }
 }
 function save() {
+  _trackStart = null;
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
   catch (e) { toast('Stockage plein : supprime d’anciennes photos ou exporte tes données.'); }
 }
@@ -158,7 +161,7 @@ function toast(msg) {
 /* Navigation                                                          */
 /* ------------------------------------------------------------------ */
 
-const TITLES = { sport: 'Sport', nutrition: 'Nutrition', proteines: 'Protéines', budget: 'Budget', settings: 'Réglages' };
+const TITLES = { suivi: 'Suivi', sport: 'Sport', nutrition: 'Nutrition', proteines: 'Protéines', budget: 'Budget', settings: 'Réglages' };
 
 $$('.tabbar button').forEach(b => b.addEventListener('click', () => {
   currentTab = b.dataset.tab;
@@ -171,7 +174,8 @@ function render() {
   $('#page-title').textContent = TITLES[currentTab];
   $('#top-actions').innerHTML = '';
   const v = $('#view');
-  if (currentTab === 'sport') renderSport(v);
+  if (currentTab === 'suivi') renderSuivi(v);
+  else if (currentTab === 'sport') renderSport(v);
   else if (currentTab === 'nutrition') renderNutrition(v);
   else if (currentTab === 'proteines') renderProtein(v);
   else if (currentTab === 'budget') renderBudget(v);
@@ -197,6 +201,223 @@ function closeSheet() {
   if (cb) cb();
 }
 $('#sheet-backdrop').addEventListener('click', closeSheet);
+
+/* ================================================================== */
+/* SUIVI : calendrier de régularité                                    */
+/* ================================================================== */
+
+const CHECK_ITEMS = [
+  { k: 'training', label: 'Entraînement', emoji: '🏋️' },
+  { k: 'creatine', label: 'Créatine', emoji: '💊' },
+  { k: 'dietLogged', label: 'Diète notée', emoji: '📝' },
+  { k: 'dietOk', label: 'Diète respectée', emoji: '🥗' },
+  { k: 'noRedbull', label: 'Sans Red Bull', emoji: '🥫' },
+];
+
+// Premier jour suivi : avant, les cases restent vides (pas de croix rouge injuste).
+let _trackStart = null;
+function trackStart() {
+  if (_trackStart) return _trackStart;
+  const dates = [
+    ...state.workouts.map(w => w.date), ...state.meals.map(m => m.date), ...state.expenses.map(e => e.date),
+    ...state.weights.map(w => w.date), ...Object.keys(state.creatine.logs), ...Object.keys(state.checks),
+    state.trackStart || todayISO(),
+  ].filter(Boolean).sort();
+  state.trackStart = dates[0] < todayISO() ? dates[0] : todayISO();
+  _trackStart = state.trackStart;
+  return _trackStart;
+}
+
+function dietRespected(d) {
+  const t = dayTotals(d), g = state.goals;
+  return t.kcal >= g.kcal * 0.85 && t.kcal <= g.kcal * 1.1 && t.protein >= g.protein * 0.9;
+}
+
+function autoStatus(k, d) {
+  const past = d < todayISO();
+  switch (k) {
+    case 'training': return state.workouts.some(w => w.date === d) ? 'ok' : null;
+    case 'creatine': return (state.creatine.logs[d] || 0) >= state.creatine.dose ? 'ok' : null;
+    case 'dietLogged': return state.meals.some(m => m.date === d) ? 'ok' : null;
+    case 'dietOk':
+      if (!state.meals.some(m => m.date === d)) return null;
+      return dietRespected(d) ? 'ok' : (past ? 'ko' : null); // aujourd'hui : la journée n'est pas finie
+    case 'noRedbull':
+      if (state.expenses.some(e => e.cat === 'redbull' && e.date === d)) return 'ko';
+      return past ? 'ok' : null;
+  }
+  return null;
+}
+
+// Statut final : choix manuel > automatique > rouge si la journée est passée.
+function checkStatus(k, d) {
+  if (d > todayISO() || d < trackStart()) return { s: null };
+  const man = (state.checks[d] || {})[k];
+  if (man) return { s: man, manual: true };
+  const a = autoStatus(k, d);
+  if (a) return { s: a, auto: true };
+  if (d < todayISO()) return { s: 'ko', missing: true };
+  return { s: null };
+}
+
+function setCheck(k, d, value) {
+  if (k === 'creatine') {
+    // la créatine reste synchronisée avec l'onglet Créatine
+    if (value === 'ok') state.creatine.logs[d] = state.creatine.dose;
+    else delete state.creatine.logs[d];
+    if (state.checks[d]) delete state.checks[d].creatine;
+  } else {
+    state.checks[d] = state.checks[d] || {};
+    if (value) state.checks[d][k] = value; else delete state.checks[d][k];
+    if (!Object.keys(state.checks[d]).length) delete state.checks[d];
+  }
+  if (d < trackStart()) state.trackStart = d;
+  save();
+}
+
+function dayScore(d) {
+  let ok = 0, n = 0;
+  for (const it of CHECK_ITEMS) {
+    const { s } = checkStatus(it.k, d);
+    if (!s || s === 'rest') continue;
+    n++; if (s === 'ok') ok++;
+  }
+  return { ok, n };
+}
+
+const MARK = { ok: '<span class="mk ok">✓</span>', ko: '<span class="mk ko">✗</span>', rest: '<span class="mk rest">😴</span>' };
+
+function renderSuivi(v) {
+  const ym = ui.suiviMonth;
+  const [y, m] = ym.split('-').map(Number);
+  const first = `${ym}-01`;
+  const nDays = new Date(y, m, 0).getDate();
+  const days = Array.from({ length: nDays }, (_, i) => addDays(first, i));
+  const today = todayISO();
+  const filter = ui.suiviFilter;
+  const counted = days.filter(d => d <= today && d >= trackStart());
+
+  // statistiques du mois
+  const stats = CHECK_ITEMS.map(it => {
+    let ok = 0, n = 0;
+    for (const d of counted) { const { s } = checkStatus(it.k, d); if (!s || s === 'rest') continue; n++; if (s === 'ok') ok++; }
+    return { ...it, ok, n, pct: n ? ok / n * 100 : 0 };
+  });
+  const sessions = state.workouts.filter(w => w.date.startsWith(ym)).length;
+  const trainDays = counted.filter(d => checkStatus('training', d).s === 'ok').length;
+  const elapsed = counted.length;
+  const target = Math.round(state.checkPrefs.trainingPerWeek * (ym === today.slice(0, 7) ? elapsed : nDays) / 7);
+  const global = stats.reduce((a, s) => a + s.ok, 0) / (stats.reduce((a, s) => a + s.n, 0) || 1) * 100;
+  const todayScore = dayScore(today);
+
+  // série de journées parfaites (toutes les cases vertes)
+  let perfect = 0; for (let d = addDays(today, -1); d >= trackStart(); d = addDays(d, -1)) { const sc = dayScore(d); if (sc.n && sc.ok === sc.n) perfect++; else break; }
+
+  v.innerHTML = `
+    ${ym === today.slice(0, 7) ? `<div class="card">
+      <div class="row between"><h3 style="margin:0">Aujourd’hui</h3><span class="muted small">${todayScore.ok}/${CHECK_ITEMS.length} validés</span></div>
+      <div class="today-checks">${CHECK_ITEMS.map(it => {
+        const st = checkStatus(it.k, today);
+        return `<button class="tcheck ${st.s || ''}" data-today="${it.k}"><span>${it.emoji}</span><small>${it.label}</small>${st.s ? MARK[st.s] : '<span class="mk none">○</span>'}</button>`;
+      }).join('')}</div>
+      <p class="muted small" style="margin:8px 0 0">Touche une case pour cocher ✓ / ✗. Ce qui est déjà enregistré (séance, créatine, repas) se coche tout seul.</p>
+    </div>` : ''}
+
+    <div class="datenav" style="margin-top:6px">
+      <button class="btn sm" id="sm-prev">‹</button><b>${fmtMonth(ym)}</b><button class="btn sm" id="sm-next" ${ym >= today.slice(0, 7) ? 'disabled' : ''}>›</button>
+    </div>
+
+    <div class="chips" style="margin-bottom:10px">
+      <button class="chip ${filter === 'all' ? 'active' : ''}" data-f="all">Tout</button>
+      ${CHECK_ITEMS.map(it => `<button class="chip ${filter === it.k ? 'active' : ''}" data-f="${it.k}">${it.emoji} ${it.label}</button>`).join('')}
+    </div>
+
+    <div class="card">
+      <div class="cal">
+        ${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(l => `<span class="cal-h">${l}</span>`).join('')}
+        ${Array.from({ length: (parseISO(first).getDay() + 6) % 7 }, () => '<span></span>').join('')}
+        ${days.map(d => {
+          const n = parseISO(d).getDate();
+          if (filter !== 'all') {
+            const { s } = checkStatus(filter, d);
+            return `<button class="cal-cell ${s || 'empty'} ${d === today ? 'today' : ''}" data-day="${d}"><small>${n}</small>${s ? MARK[s] : ''}</button>`;
+          }
+          const sc = dayScore(d);
+          const cls = !sc.n ? 'empty' : sc.ok === sc.n ? 'ok' : sc.ok === 0 ? 'ko' : 'mid';
+          return `<button class="cal-cell all ${cls} ${d === today ? 'today' : ''}" data-day="${d}"><small>${n}</small>
+            ${sc.n ? `<span class="dots">${CHECK_ITEMS.map(it => { const s = checkStatus(it.k, d).s; return `<i class="${s || 'none'}"></i>`; }).join('')}</span>` : ''}</button>`;
+        }).join('')}
+      </div>
+      <div class="row small muted" style="gap:12px;margin-top:10px;flex-wrap:wrap">
+        <span><span class="mk ok">✓</span> fait</span><span><span class="mk ko">✗</span> pas fait</span><span>😴 repos</span>
+        ${filter === 'all' ? '<span>· points = Entraînement, Créatine, Diète notée, Diète respectée, Sans Red Bull</span>' : ''}
+      </div>
+    </div>
+
+    <h2>Bilan du mois</h2>
+    <div class="stats">
+      <div class="stat"><div class="v" style="color:${global >= 80 ? 'var(--accent)' : global >= 50 ? 'var(--orange)' : 'var(--red)'}">${counted.length ? r0(global) + ' %' : '—'}</div><div class="l">régularité globale</div></div>
+      <div class="stat"><div class="v">${sessions}<span class="muted" style="font-size:13px"> / ${target}</span></div><div class="l">séances / objectif</div></div>
+      <div class="stat"><div class="v">${perfect}</div><div class="l">jours parfaits d’affilée</div></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      ${stats.map(s => {
+        const extra = s.k === 'training' ? `${trainDays} jours entraînés · ${sessions} séance${sessions > 1 ? 's' : ''}` : `${s.ok}/${s.n} jours`;
+        const pct = s.k === 'training' ? (target ? Math.min(100, sessions / target * 100) : 0) : s.pct;
+        return `<div class="macro"><div class="row between"><span>${s.emoji} ${s.label}</span><span class="muted">${extra} · <b style="color:var(--text)">${r0(pct)} %</b></span></div>
+          <div class="bar" style="--c:${pct >= 80 ? 'var(--accent)' : pct >= 50 ? 'var(--orange)' : 'var(--red)'}"><i style="width:${pct}%"></i></div></div>`;
+      }).join('')}
+    </div>
+
+    <div class="card">
+      <b>Réglages du suivi</b>
+      <label class="field" style="margin-top:8px"><span>Objectif d’entraînements par semaine</span>
+        <select id="sp-train">${[1, 2, 3, 4, 5, 6, 7, 8, 10, 12].map(n => `<option ${n === state.checkPrefs.trainingPerWeek ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <p class="muted small" style="margin:0">« Diète respectée » se coche toute seule si tes calories sont entre −15 % et +10 % de l’objectif et tes protéines à 90 % ou plus. Tu peux toujours corriger à la main.
+      Pour un jour de repos prévu, mets 😴 dans Entraînement : il ne compte pas comme raté.</p>
+    </div>`;
+
+  $('#sm-prev', v).addEventListener('click', () => { ui.suiviMonth = shiftMonth(ym, -1); renderSuivi(v); });
+  $('#sm-next', v).addEventListener('click', () => { if (ym < today.slice(0, 7)) { ui.suiviMonth = shiftMonth(ym, 1); renderSuivi(v); } });
+  $$('[data-f]', v).forEach(b => b.addEventListener('click', () => { ui.suiviFilter = b.dataset.f; renderSuivi(v); }));
+  $$('[data-day]', v).forEach(b => b.addEventListener('click', () => {
+    const d = b.dataset.day;
+    if (d > today) return toast('Ce jour n’est pas encore passé 🙂');
+    openDayChecks(d, () => renderSuivi(v));
+  }));
+  $$('[data-today]', v).forEach(b => b.addEventListener('click', () => {
+    // cycle rapide : vide → ✓ → ✗ → (repos pour l'entraînement) → automatique
+    const k = b.dataset.today; const cur = checkStatus(k, today);
+    const order = k === 'training' ? ['ok', 'ko', 'rest', null] : ['ok', 'ko', null];
+    const now = cur.manual || cur.auto ? cur.s : null;
+    const next = order[(order.indexOf(now) + 1) % order.length];
+    setCheck(k, today, next); renderSuivi(v);
+  }));
+  $('#sp-train', v).addEventListener('change', e => { state.checkPrefs.trainingPerWeek = +e.target.value; save(); renderSuivi(v); });
+}
+
+function openDayChecks(d, onDone) {
+  const draw = () => {
+    const s = openSheet(`📅 ${fmtDate(d, { weekday: 'long', day: 'numeric', month: 'long' })}`, `
+      ${CHECK_ITEMS.map(it => {
+        const st = checkStatus(it.k, d);
+        const a = autoStatus(it.k, d);
+        const info = st.manual ? 'coché à la main' : st.auto ? 'automatique' : st.missing ? 'rien d’enregistré' : '';
+        return `<div class="card tight">
+          <div class="row between"><b>${it.emoji} ${it.label}</b><span class="muted small">${info}</span></div>
+          <div class="row" style="margin-top:8px">
+            <button class="btn sm grow choice ${st.s === 'ok' ? 'sel-ok' : ''}" data-k="${it.k}" data-v="ok">✓ Fait</button>
+            <button class="btn sm grow choice ${st.s === 'ko' ? 'sel-ko' : ''}" data-k="${it.k}" data-v="ko">✗ Pas fait</button>
+            ${it.k === 'training' ? `<button class="btn sm grow choice ${st.s === 'rest' ? 'sel-rest' : ''}" data-k="${it.k}" data-v="rest">😴 Repos</button>` : ''}
+            ${st.manual ? `<button class="btn sm ghost" data-k="${it.k}" data-v="">Auto${a ? ' (' + (a === 'ok' ? '✓' : '✗') + ')' : ''}</button>` : ''}
+          </div></div>`;
+      }).join('')}
+      <button class="btn primary block" data-close2>Terminé</button>`, onDone);
+    $$('[data-k]', s).forEach(b => b.addEventListener('click', () => { setCheck(b.dataset.k, d, b.dataset.v || null); draw(); }));
+    $('[data-close2]', s).addEventListener('click', closeSheet);
+  };
+  draw();
+}
 
 /* ================================================================== */
 /* SPORT                                                               */
