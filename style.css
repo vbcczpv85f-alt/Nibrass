@@ -255,3 +255,9 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
 .target.up { background: #163322; border-color: #24543a; }
 .exo select { padding: 6px 8px; font-size: 13px; }
 .seg button { font-size: 13px; }
+
+/* Créatine */
+.cal-day { aspect-ratio: 1; border-radius: 10px; border: 1px solid var(--line); background: var(--card2); color: var(--muted); font-size: 12px; cursor: pointer; }
+.cal-day.full { background: var(--purple); border-color: var(--purple); color: #1a1030; font-weight: 700; }
+.cal-day.half { background: #2c2440; border-color: var(--purple); color: var(--text); }
+.cal-day.today { outline: 2px solid var(--accent); outline-offset: 1px; }

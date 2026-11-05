@@ -90,13 +90,15 @@ const defaultState = () => ({
   expenses: [],
   redbull: { price: 1.9, weeklyLimit: 3, startDate: todayISO() },
   exSettings: {},
+  weights: [],
+  creatine: { dose: 10, logs: {} },
   restPrefs: { compound: 150, isolation: 90, auto: true, sound: true },
   settings: { apiKey: '', model: 'claude-opus-5-5' },
 });
 
 let state = load();
 let currentTab = 'sport';
-let ui = { nutDate: todayISO(), budgetMonth: todayISO().slice(0, 7), budgetTab: 'depenses', sportTab: 'seances' };
+let ui = { nutDate: todayISO(), budgetMonth: todayISO().slice(0, 7), budgetTab: 'depenses', sportTab: 'seances', nutTab: 'journal', weightRange: '90' };
 
 function load() {
   try {
@@ -104,7 +106,7 @@ function load() {
     if (!raw) return defaultState();
     const d = defaultState();
     const s = JSON.parse(raw);
-    return { ...d, ...s, goals: { ...d.goals, ...s.goals }, profile: { ...d.profile, ...s.profile }, redbull: { ...d.redbull, ...s.redbull }, restPrefs: { ...d.restPrefs, ...s.restPrefs }, exSettings: { ...s.exSettings }, settings: { ...d.settings, ...s.settings }, templates: { ...d.templates, ...s.templates } };
+    return { ...d, ...s, goals: { ...d.goals, ...s.goals }, profile: { ...d.profile, ...s.profile }, redbull: { ...d.redbull, ...s.redbull }, restPrefs: { ...d.restPrefs, ...s.restPrefs }, creatine: { ...d.creatine, ...s.creatine, logs: { ...(s.creatine || {}).logs } }, exSettings: { ...s.exSettings }, settings: { ...d.settings, ...s.settings }, templates: { ...d.templates, ...s.templates } };
   } catch {
     return defaultState();
   }
@@ -755,6 +757,205 @@ function ring(value, goal, color, size = 118) {
 }
 
 function renderNutrition(v) {
+  const tabs = [['journal', 'Journal'], ['poids', 'Poids'], ['creatine', 'Créatine']];
+  v.innerHTML = `<div class="seg">${tabs.map(([k, l]) => `<button data-nt="${k}" class="${ui.nutTab === k ? 'active' : ''}">${l}</button>`).join('')}</div><div id="nut-body"></div>`;
+  $$('[data-nt]', v).forEach(b => b.addEventListener('click', () => { ui.nutTab = b.dataset.nt; renderNutrition(v); }));
+  const body = $('#nut-body', v);
+  if (ui.nutTab === 'poids') renderWeight(body);
+  else if (ui.nutTab === 'creatine') renderCreatine(body);
+  else renderJournal(body);
+}
+
+/* ---------------- Poids ---------------- */
+
+function weightsSorted() { return [...state.weights].sort((a, b) => a.date.localeCompare(b.date)); }
+function fmt1(n) { return (Math.round(n * 10) / 10).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }); }
+
+// Moyenne glissante sur 7 jours (lisse les variations d'eau / de digestion).
+function movingAvg(list, days = 7) {
+  return list.map(p => {
+    const from = addDays(p.date, -(days - 1));
+    const win = list.filter(x => x.date >= from && x.date <= p.date);
+    return win.reduce((a, x) => a + x.kg, 0) / win.length;
+  });
+}
+
+function weightChart(list, goal) {
+  if (list.length < 2) return '<div class="empty small">Ajoute au moins 2 pesées pour voir la courbe.</div>';
+  const W = 320, H = 170, L = 34, R = 8, T = 10, B = 22;
+  const avg = movingAvg(list);
+  const t0 = parseISO(list[0].date).getTime(), t1 = parseISO(list[list.length - 1].date).getTime() || t0 + 1;
+  const vals = [...list.map(p => p.kg), ...(goal ? [goal] : [])];
+  let min = Math.min(...vals), max = Math.max(...vals);
+  const pad = Math.max(0.5, (max - min) * 0.12); min -= pad; max += pad;
+  const x = d => L + (parseISO(d).getTime() - t0) / ((t1 - t0) || 1) * (W - L - R);
+  const y = kg => T + (1 - (kg - min) / (max - min)) * (H - T - B);
+  const ticks = [0, 0.5, 1].map(f => min + (max - min) * f);
+  const raw = list.map(p => `<circle cx="${x(p.date).toFixed(1)}" cy="${y(p.kg).toFixed(1)}" r="2.6" fill="var(--blue)" opacity=".55"/>`).join('');
+  const line = list.map((p, i) => `${x(p.date).toFixed(1)},${y(avg[i]).toFixed(1)}`).join(' ');
+  const last = list[list.length - 1];
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+    ${ticks.map(tk => `<line x1="${L}" x2="${W - R}" y1="${y(tk)}" y2="${y(tk)}" stroke="var(--line)" stroke-dasharray="3 4"/>
+      <text x="${L - 6}" y="${y(tk) + 3.5}" font-size="10" fill="var(--muted)" text-anchor="end">${fmt1(tk)}</text>`).join('')}
+    ${goal ? `<line x1="${L}" x2="${W - R}" y1="${y(goal)}" y2="${y(goal)}" stroke="var(--orange)" stroke-dasharray="6 4"/>
+      <text x="${W - R}" y="${y(goal) - 4}" font-size="10" fill="var(--orange)" text-anchor="end">objectif ${fmt1(goal)}</text>` : ''}
+    ${raw}
+    <polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(last.date)}" cy="${y(avg[avg.length - 1])}" r="4" fill="var(--accent)"/>
+    <text x="${L}" y="${H - 6}" font-size="10" fill="var(--muted)">${fmtDate(list[0].date, { day: 'numeric', month: 'short' })}</text>
+    <text x="${W - R}" y="${H - 6}" font-size="10" fill="var(--muted)" text-anchor="end">${fmtDate(last.date, { day: 'numeric', month: 'short' })}</text>
+  </svg>
+  <div class="row small muted" style="gap:14px;margin-top:6px"><span><span style="color:var(--blue)">●</span> pesées</span><span><span style="color:var(--accent)">━</span> moyenne 7 jours</span></div>`;
+}
+
+function renderWeight(body) {
+  const all = weightsSorted();
+  const ranges = [['30', '1 mois'], ['90', '3 mois'], ['180', '6 mois'], ['all', 'Tout']];
+  const from = ui.weightRange === 'all' ? '0000' : addDays(todayISO(), -num(ui.weightRange));
+  const list = all.filter(p => p.date >= from);
+  const goal = num(state.profile.weightGoal) || 0;
+  const last = all[all.length - 1];
+  const avgAll = movingAvg(all);
+  const trendNow = avgAll[avgAll.length - 1];
+  // tendance : moyenne 7 j actuelle vs moyenne 7 j il y a ~7 jours
+  let weekly = null;
+  if (all.length >= 2) {
+    const ref = addDays(last.date, -7);
+    const idx = all.map(p => p.date).filter(d => d <= ref).length - 1;
+    if (idx >= 0) weekly = trendNow - avgAll[idx];
+  }
+  const start = all[0];
+  const todayW = all.find(p => p.date === todayISO());
+  const toGoal = goal && last ? last.kg - goal : null;
+
+  body.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <input id="w-kg" inputmode="decimal" placeholder="${last ? fmt1(last.kg) : 'Poids en kg'}" value="${todayW ? fmt1(todayW.kg) : ''}" style="font-size:20px;font-weight:700">
+        <input type="date" id="w-date" value="${todayISO()}" style="max-width:150px">
+      </div>
+      <button class="btn primary block" id="w-add" style="margin-top:10px">⚖️ ${todayW ? 'Mettre à jour la pesée du jour' : 'Enregistrer ma pesée'}</button>
+      <p class="muted small" style="margin:8px 0 0">Conseil : pèse-toi le matin à jeun, après être allé aux toilettes. Fie-toi à la moyenne sur 7 jours plutôt qu’au chiffre du jour.</p>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="v">${last ? fmt1(last.kg) : '—'}</div><div class="l">kg actuel</div></div>
+      <div class="stat"><div class="v" style="color:${weekly == null ? 'inherit' : weekly <= 0 ? 'var(--blue)' : 'var(--orange)'}">${weekly == null ? '—' : (weekly > 0 ? '+' : '') + fmt1(weekly)}</div><div class="l">kg / semaine</div></div>
+      <div class="stat"><div class="v">${start && last && all.length > 1 ? (last.kg - start.kg > 0 ? '+' : '') + fmt1(last.kg - start.kg) : '—'}</div><div class="l">depuis le début</div></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="chips" style="margin-bottom:10px">${ranges.map(([k, l]) => `<button class="chip ${ui.weightRange === k ? 'active' : ''}" data-wr="${k}">${l}</button>`).join('')}</div>
+      ${weightChart(list, goal)}
+    </div>
+
+    <div class="card">
+      <div class="row between"><b>🎯 Poids objectif</b>${toGoal != null ? `<span class="pill ${Math.abs(toGoal) < 0.5 ? 'good' : ''}">${Math.abs(toGoal) < 0.5 ? 'Atteint 🎉' : `encore ${fmt1(Math.abs(toGoal))} kg`}</span>` : ''}</div>
+      <div class="row" style="margin-top:8px"><input id="w-goal" inputmode="decimal" placeholder="Ex. 78" value="${goal ? fmt1(goal) : ''}"><button class="btn" id="w-goal-save">OK</button></div>
+      ${toGoal != null && weekly && Math.abs(toGoal) >= 0.5 && Math.sign(weekly) === -Math.sign(toGoal) ? `<p class="muted small" style="margin:8px 0 0">À ce rythme, objectif atteint dans environ <b style="color:var(--text)">${Math.ceil(Math.abs(toGoal / weekly))} semaines</b>.</p>` : ''}
+    </div>
+
+    <h2>Pesées</h2>
+    ${all.length ? `<div class="card list">${[...all].reverse().slice(0, 30).map((p, i, arr) => {
+      const prev = arr[i + 1]; const d = prev ? p.kg - prev.kg : 0;
+      return `<div class="list-item"><div class="grow"><b>${fmt1(p.kg)} kg</b><div class="muted small">${fmtDate(p.date, { weekday: 'long', day: 'numeric', month: 'long' })}</div></div>
+        ${prev ? `<span class="small" style="color:${d <= 0 ? 'var(--blue)' : 'var(--orange)'}">${d > 0 ? '+' : ''}${fmt1(d)}</span>` : ''}
+        <button class="icon-btn" data-wdel="${p.id}">🗑️</button></div>`;
+    }).join('')}</div>` : '<div class="card empty">Aucune pesée pour l’instant.</div>'}`;
+
+  $('#w-add', body).addEventListener('click', () => {
+    const kg = num($('#w-kg', body).value); const date = $('#w-date', body).value || todayISO();
+    if (kg < 20 || kg > 400) return toast('Entre un poids valide');
+    const ex = state.weights.find(p => p.date === date);
+    if (ex) ex.kg = kg; else state.weights.push({ id: uid(), date, kg });
+    if (date >= (weightsSorted().pop() || {}).date) state.profile.weight = kg; // garde le calculateur à jour
+    save(); renderWeight(body); toast('Pesée enregistrée ⚖️');
+  });
+  $$('[data-wr]', body).forEach(b => b.addEventListener('click', () => { ui.weightRange = b.dataset.wr; renderWeight(body); }));
+  $('#w-goal-save', body).addEventListener('click', () => { state.profile.weightGoal = num($('#w-goal', body).value) || ''; save(); renderWeight(body); toast('Objectif enregistré'); });
+  $$('[data-wdel]', body).forEach(b => b.addEventListener('click', () => {
+    if (!confirm('Supprimer cette pesée ?')) return;
+    state.weights = state.weights.filter(p => p.id !== b.dataset.wdel); save(); renderWeight(body);
+  }));
+}
+
+/* ---------------- Créatine ---------------- */
+
+function creatineStreak() {
+  const c = state.creatine; let n = 0; let d = todayISO();
+  if ((c.logs[d] || 0) < c.dose) d = addDays(d, -1); // la journée en cours ne casse pas la série
+  while ((c.logs[d] || 0) >= c.dose) { n++; d = addDays(d, -1); }
+  return n;
+}
+
+function creatineCard(date, compact) {
+  const c = state.creatine; const got = c.logs[date] || 0; const ok = got >= c.dose;
+  return `<div class="card" style="${ok ? 'border-color:#24543a' : ''}">
+    <div class="row between"><h3 style="margin:0">💊 Créatine</h3><span class="${ok ? 'amount-pos' : 'muted'}">${fmt1(got).replace(',0', '')} / ${c.dose} g ${ok ? '✓' : ''}</span></div>
+    <div class="bar" style="--c:var(--purple);margin:10px 0"><i style="width:${Math.min(100, got / c.dose * 100)}%"></i></div>
+    <div class="row">
+      ${ok ? `<span class="small muted grow">Prise du jour validée 💪 Série : ${creatineStreak()} j</span><button class="btn sm" data-crea="reset">Annuler</button>`
+        : `<button class="btn sm grow" data-crea="${c.dose / 2}">＋ ${String(c.dose / 2).replace('.', ',')} g</button><button class="btn sm grow primary" data-crea="${c.dose}">✓ J’ai pris mes ${c.dose} g</button>`}
+    </div>
+    ${compact ? '' : ''}
+  </div>`;
+}
+
+function bindCreatine(root, date, redraw) {
+  $$('[data-crea]', root).forEach(b => b.addEventListener('click', () => {
+    const c = state.creatine;
+    if (b.dataset.crea === 'reset') delete c.logs[date];
+    else c.logs[date] = Math.min(c.dose, (c.logs[date] || 0) + num(b.dataset.crea));
+    save(); redraw();
+    if ((c.logs[date] || 0) >= c.dose) toast('Créatine du jour ✅');
+  }));
+}
+
+function renderCreatine(body) {
+  const c = state.creatine; const today = todayISO();
+  const days = Array.from({ length: 35 }, (_, i) => addDays(today, i - 34));
+  const taken30 = Array.from({ length: 30 }, (_, i) => addDays(today, -i)).filter(d => (c.logs[d] || 0) >= c.dose).length;
+  let best = 0, cur = 0;
+  const keys = Object.keys(c.logs).sort();
+  if (keys.length) for (let d = keys[0]; d <= today; d = addDays(d, 1)) { if ((c.logs[d] || 0) >= c.dose) { cur++; best = Math.max(best, cur); } else cur = 0; }
+
+  body.innerHTML = `
+    ${creatineCard(today)}
+    <div class="stats">
+      <div class="stat"><div class="v">${creatineStreak()}</div><div class="l">jours d’affilée</div></div>
+      <div class="stat"><div class="v">${best}</div><div class="l">meilleure série</div></div>
+      <div class="stat"><div class="v">${r0(taken30 / 30 * 100)} %</div><div class="l">régularité 30 j</div></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <b>5 dernières semaines</b>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-top:10px;text-align:center">
+        ${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(l => `<span class="muted small">${l}</span>`).join('')}
+        ${Array.from({ length: (parseISO(days[0]).getDay() + 6) % 7 }, () => '<span></span>').join('')}
+        ${days.map(d => { const g = c.logs[d] || 0; const full = g >= c.dose;
+          return `<button class="cal-day ${full ? 'full' : g ? 'half' : ''} ${d === today ? 'today' : ''}" data-cday="${d}" title="${fmtDate(d)}">${parseISO(d).getDate()}</button>`; }).join('')}
+      </div>
+      <p class="muted small" style="margin:10px 0 0">Touche un jour pour cocher / décocher un oubli de saisie.</p>
+    </div>
+    <div class="card">
+      <b>Réglages</b>
+      <label class="field" style="margin-top:8px"><span>Dose quotidienne (g)</span><input id="c-dose" inputmode="decimal" value="${String(c.dose).replace('.', ',')}"></label>
+      <button class="btn block" id="c-save">Enregistrer</button>
+    </div>
+    <div class="card small muted">
+      <b style="color:var(--text)">Bon à savoir :</b> la créatine monohydrate agit par saturation des muscles, donc c’est la <b style="color:var(--text)">régularité</b> qui compte, pas l’heure de la prise —
+      jours de repos compris. Bois suffisamment d’eau (objectif eau dans le Journal). Une prise de 1 à 2 kg en début de cure est normale : c’est de l’eau dans les muscles, pas du gras.
+    </div>`;
+
+  bindCreatine(body, today, () => renderCreatine(body));
+  $$('[data-cday]', body).forEach(b => b.addEventListener('click', () => {
+    const d = b.dataset.cday;
+    if ((c.logs[d] || 0) >= c.dose) delete c.logs[d]; else c.logs[d] = c.dose;
+    save(); renderCreatine(body);
+  }));
+  $('#c-save', body).addEventListener('click', () => { c.dose = num($('#c-dose', body).value) || c.dose; save(); renderCreatine(body); toast('Dose enregistrée'); });
+}
+
+function renderJournal(v) {
   const d = ui.nutDate;
   const tot = dayTotals(d);
   const g = state.goals;
@@ -789,7 +990,9 @@ function renderNutrition(v) {
       <button class="btn" id="manual-meal">✍️ Ajout manuel</button>
     </div>
 
-    <div class="card" style="margin-top:12px">
+    <div style="margin-top:12px" id="crea-slot">${creatineCard(d, true)}</div>
+
+    <div class="card">
       <div class="row between"><h3 style="margin:0">💧 Eau</h3><span class="muted">${(water / 1000).toLocaleString('fr-FR')} / ${(g.water / 1000).toLocaleString('fr-FR')} L</span></div>
       <div class="bar" style="--c:var(--blue);margin:10px 0"><i style="width:${Math.min(100, water / g.water * 100)}%"></i></div>
       <div class="row"><button class="btn sm" data-water="-250">−250 ml</button><button class="btn sm grow" data-water="250">＋ 250 ml</button><button class="btn sm grow" data-water="500">＋ 500 ml</button></div>
@@ -823,13 +1026,14 @@ function renderNutrition(v) {
       <button class="btn block" style="margin-top:12px" id="edit-goals">🎯 Modifier / calculer mes objectifs</button>
     </div>`;
 
-  $('#nd-prev', v).addEventListener('click', () => { ui.nutDate = addDays(d, -1); renderNutrition(v); });
-  $('#nd-next', v).addEventListener('click', () => { if (d < todayISO()) { ui.nutDate = addDays(d, 1); renderNutrition(v); } });
+  $('#nd-prev', v).addEventListener('click', () => { ui.nutDate = addDays(d, -1); renderJournal(v); });
+  $('#nd-next', v).addEventListener('click', () => { if (d < todayISO()) { ui.nutDate = addDays(d, 1); renderJournal(v); } });
   $('#ai-meal', v).addEventListener('click', () => openAIMeal());
   $('#manual-meal', v).addEventListener('click', () => openMealEditor({ date: d }));
   $('#edit-goals', v).addEventListener('click', openGoals);
+  bindCreatine(v, d, () => renderJournal(v));
   $$('[data-water]', v).forEach(b => b.addEventListener('click', () => {
-    state.water[d] = Math.max(0, (state.water[d] || 0) + +b.dataset.water); save(); renderNutrition(v);
+    state.water[d] = Math.max(0, (state.water[d] || 0) + +b.dataset.water); save(); renderJournal(v);
   }));
   $$('[data-meal]', v).forEach(el => el.addEventListener('click', () => openMealEditor(state.meals.find(m => m.id === el.dataset.meal))));
 }
