@@ -2,7 +2,7 @@
 // Tout est stocké localement dans le navigateur (localStorage).
 
 const STORE_KEY = 'nibrass.v1';
-const APP_VERSION = '1.4 · protéines';
+const APP_VERSION = '1.5 · onglet protéines';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.5.0/+esm';
 
 /* ------------------------------------------------------------------ */
@@ -158,7 +158,7 @@ function toast(msg) {
 /* Navigation                                                          */
 /* ------------------------------------------------------------------ */
 
-const TITLES = { sport: 'Sport', nutrition: 'Nutrition', budget: 'Budget', settings: 'Réglages' };
+const TITLES = { sport: 'Sport', nutrition: 'Nutrition', proteines: 'Protéines', budget: 'Budget', settings: 'Réglages' };
 
 $$('.tabbar button').forEach(b => b.addEventListener('click', () => {
   currentTab = b.dataset.tab;
@@ -173,6 +173,7 @@ function render() {
   const v = $('#view');
   if (currentTab === 'sport') renderSport(v);
   else if (currentTab === 'nutrition') renderNutrition(v);
+  else if (currentTab === 'proteines') renderProtein(v);
   else if (currentTab === 'budget') renderBudget(v);
   else renderSettings(v);
 }
@@ -759,13 +760,12 @@ function ring(value, goal, color, size = 118) {
 }
 
 function renderNutrition(v) {
-  const tabs = [['journal', 'Journal'], ['proteines', 'Protéines'], ['poids', 'Poids'], ['creatine', 'Créatine']];
+  const tabs = [['journal', 'Journal'], ['poids', 'Poids'], ['creatine', 'Créatine']];
   v.innerHTML = `<div class="seg">${tabs.map(([k, l]) => `<button data-nt="${k}" class="${ui.nutTab === k ? 'active' : ''}">${l}</button>`).join('')}</div><div id="nut-body"></div>`;
   $$('[data-nt]', v).forEach(b => b.addEventListener('click', () => { ui.nutTab = b.dataset.nt; renderNutrition(v); }));
   const body = $('#nut-body', v);
   if (ui.nutTab === 'poids') renderWeight(body);
   else if (ui.nutTab === 'creatine') renderCreatine(body);
-  else if (ui.nutTab === 'proteines') renderProtein(body);
   else renderJournal(body);
 }
 
