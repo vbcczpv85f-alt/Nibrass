@@ -1,0 +1,9 @@
+{
+  "name": "Nibrass – l'anglais en chansons",
+  "short_name": "Nibrass",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fbf5f2",
+  "theme_color": "#d93a4a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

@@ -15,7 +15,19 @@ Apprends l'anglais rapidement et avec plaisir grâce aux chansons de ta playlist
 
 Fonctionne sur ordinateur et sur iPhone (ajoute-la à l'écran d'accueil depuis Safari).
 
-## Installation
+## Version en ligne (GitHub Pages) — la plus simple
+
+Le dossier `docs/` contient une version du site qui marche sans serveur :
+tu écris le titre d'une chanson en anglais, et l'IA te donne la traduction, la grammaire, le vocabulaire et ton quiz du jour.
+
+1. Sur GitHub : **Settings → Pages → Build and deployment → Source : Deploy from a branch**.
+2. Choisis la branche `claude/english-learning-music-app-nyx5lj` et le dossier **`/docs`**, puis **Save**.
+3. Après une minute, le site est à l'adresse `https://vbcczpv85f-alt.github.io/Nibrass/`.
+4. Sur le site, ouvre **⚙︎ Réglages** et colle ta clé API Claude (créée sur [console.anthropic.com](https://console.anthropic.com/settings/keys)). Elle reste dans ton navigateur.
+
+Tes données restent dans le navigateur : utilise « Télécharger une sauvegarde » dans les Réglages pour les garder ou les passer sur un autre appareil.
+
+## Version complète avec serveur (Node.js)
 
 Prérequis : [Node.js](https://nodejs.org) 20 ou plus.
 
