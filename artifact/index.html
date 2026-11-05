@@ -158,7 +158,7 @@ nav.tabs a.on { color: var(--accent); background: var(--sunk); }
 
 <nav class="tabs" aria-label="Rubriques"><div class="in">
   <a href="#home" data-tab="home"><svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>Accueil</a>
-  <a href="#playlist" data-tab="playlist"><svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>Playlist</a>
+  <a href="#playlist" data-tab="playlist"><svg viewBox="0 0 24 24"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>Chansons</a>
   <a href="#grammar" data-tab="grammar"><svg viewBox="0 0 24 24"><path d="M4 4h6a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H4z"/><path d="M20 4h-6a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h7z"/></svg>Grammaire</a>
   <a href="#vocab" data-tab="vocab"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg>Vocabulaire</a>
   <a href="#quiz" data-tab="quiz"><svg viewBox="0 0 24 24"><path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/></svg>Quiz</a>
@@ -182,12 +182,13 @@ const shuffle = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { co
 const hue = (s) => [...String(s)].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 7);
 const sleeve = (s, big = false) => {
   const h = hue(s.artist + s.title);
-  const initials = (s.artist || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const initials = (s.artist || s.title || '?').split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   return `<span class="sleeve${big ? ' big' : ''}" style="background:linear-gradient(135deg,hsl(${h} 62% 46%),hsl(${(h + 40) % 360} 58% 32%))" aria-hidden="true">${esc(initials)}</span>`;
 };
 const level = (n) => `<span class="lvl" title="Niveau ${n}/5">${[1, 2, 3, 4, 5].map((i) => `<i class="${i <= n ? 'on' : ''}"></i>`).join('')}</span>`;
 const spinner = (msg) => `<div class="empty"><span class="spin"></span>${esc(msg)}</div>`;
-const appleLink = (s) => `https://music.apple.com/fr/search?term=${encodeURIComponent(s.title + ' ' + s.artist)}`;
+const by = (s) => s.artist || 'Artiste non précisé';
+const songName = (s) => (s.artist ? `${s.title} · ${s.artist}` : s.title);
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -312,12 +313,16 @@ function localQuiz() {
 
 // ================= IA (Claude) =================
 const LESSON_PROMPT = (s, lyrics) => `Tu es un professeur d'anglais chaleureux pour un francophone qui apprend l'anglais grâce aux chansons qu'il aime.
-Chanson : "${s.title}" de ${s.artist}.
+Chanson : "${s.title}"${s.artist ? ` de ${s.artist}` : " (artiste non précisé : identifie la chanson anglophone la plus connue portant ce titre et indique l'artiste dans artist)"}.
 ${lyrics ? `Paroles fournies par l'élève (pour ton analyse seulement, ne les recopie pas) :\n<lyrics>\n${lyrics}\n</lyrics>\n` : ''}
 Crée une leçon. Réponds uniquement avec un objet JSON de cette forme :
 {
  "known_song": true|false,
- "level": "A1"|"A2"|"B1"|"B2"|"C1"|"C2",
+ "artist": "artiste de la chanson",
+ "title_fr": "traduction française du titre",
+ "translation": [ { "part": "Couplet 1, Refrain, Pont…", "meaning_fr": "traduction fidèle en français de ce que dit cette partie, reformulée en prose (3 à 5 phrases), sans recopier les paroles anglaises" } ],
+ "key_lines": [ { "line": "vers clé de la chanson (10 mots maximum)", "translation_fr": "traduction française du vers", "note_fr": "ce qu'il faut remarquer (grammaire, sens caché, jeu de mots)" } ],
+ "level":"A1"|"A2"|"B1"|"B2"|"C1"|"C2",
  "interpretation_fr": "sens de la chanson, histoire, émotions, contexte (4 à 8 phrases)",
  "themes": ["2 à 4 thèmes courts"],
  "mood": "ambiance en quelques mots",
@@ -327,6 +332,7 @@ Crée une leçon. Réponds uniquement avec un objet JSON de cette forme :
  "pronunciation_tip_fr": "un conseil de prononciation",
  "fun_fact_fr": "une anecdote sur la chanson ou l'artiste"
 }
+translation couvre toutes les parties de la chanson dans l'ordre. key_lines : 4 à 8 vers marquants, traduits.
 3 à 5 points de grammaire réellement illustrés par la chanson, 8 à 15 mots de vocabulaire utiles.
 Droit d'auteur : ne reproduis jamais les paroles complètes ; chaque citation fait au maximum 10 mots.
 Si tu ne connais pas la chanson et qu'aucune parole n'est fournie, mets known_song à false, base la leçon sur le titre, l'artiste et ses thèmes habituels sans inventer de paroles, et dis-le dans interpretation_fr.`;
@@ -346,6 +352,10 @@ const arr = (x) => (Array.isArray(x) ? x : []);
 function cleanLesson(L) {
   return {
     known_song: L.known_song !== false,
+    artist: String(L.artist || ''),
+    title_fr: String(L.title_fr || ''),
+    translation: arr(L.translation).filter((p) => p && p.meaning_fr).map((p) => ({ part: String(p.part || ''), meaning_fr: String(p.meaning_fr) })),
+    key_lines: arr(L.key_lines).filter((k) => k && k.line).map((k) => ({ line: String(k.line), translation_fr: String(k.translation_fr || ''), note_fr: String(k.note_fr || '') })),
     level: String(L.level || 'B1'),
     interpretation_fr: String(L.interpretation_fr || ''),
     themes: arr(L.themes).map(String).slice(0, 5),
@@ -413,8 +423,8 @@ function renderHome() {
     </section>
     ${S.songs.length === 0 ? `
     <section class="panel sunk">
-      <h2>Commence par ta playlist</h2>
-      <p>Ajoute les chansons que tu écoutes sur Apple Music. Pour chacune, l'IA t'explique les paroles et en tire un cours de grammaire et du vocabulaire.</p>
+      <h2>Commence par tes chansons</h2>
+      <p>Écris le titre d'une chanson en anglais que tu aimes. L'IA te donne sa traduction, un cours de grammaire et le vocabulaire à retenir.</p>
       <div class="row"><a class="btn" href="#playlist">Ajouter mes chansons</a><button class="alt" id="demo">Essayer avec 3 chansons d'exemple</button></div>
     </section>` : ''}
     <section class="panel">
@@ -423,7 +433,7 @@ function renderHome() {
       <div class="row"><a class="btn" href="#quiz">Faire mon quiz</a>${due ? `<a class="btn alt" href="#vocab">Réviser ${due} mot${due > 1 ? 's' : ''}</a>` : ''}</div>
     </section>
     ${next ? `<section class="panel"><span class="eyebrow">Prochaine chanson à étudier</span>
-      <a class="track" href="#song-${next.id}">${sleeve(next)}<span class="grow"><div class="t">${esc(next.title)}</div><div class="a">${esc(next.artist)}</div></span><span class="btn sm">Étudier</span></a></section>` : ''}
+      <a class="track" href="#song-${next.id}">${sleeve(next)}<span class="grow"><div class="t">${esc(next.title)}</div><div class="a">${esc(by(next))}</div></span><span class="btn sm">Étudier</span></a></section>` : ''}
     <section class="panel">
       <div class="row spread"><h3>Tes 14 derniers jours</h3><span class="muted small">activités par jour</span></div>
       <div class="days">${hist.map((d) => `<div class="${d.n ? '' : 'zero'}" style="height:${Math.max(5, (d.n / max) * 100)}%" title="${d.k} : ${d.n} activité(s)"></div>`).join('')}</div>
@@ -438,7 +448,7 @@ function addSongs(items, playlist = '') {
   let n = 0;
   for (const it of items) {
     const title = String(it.title || '').trim(), artist = String(it.artist || '').trim();
-    if (!title || !artist) continue;
+    if (!title) continue;
     if (S.songs.some((s) => s.title.toLowerCase() === title.toLowerCase() && s.artist.toLowerCase() === artist.toLowerCase())) continue;
     const s = { id: uid(), title, artist, album: it.album || '', playlist, addedAt: new Date().toISOString(), lesson: null };
     S.songs.push(s); saveSong(s); n++;
@@ -456,43 +466,45 @@ function parseList(text) {
       continue;
     }
     const m = line.match(/^(.+?)\s+[-–—]\s+(.+)$/);
-    if (m) out.push({ title: m[1].trim(), artist: m[2].trim() });
+    out.push(m ? { title: m[1].trim(), artist: m[2].trim() } : { title: line, artist: '' });
   }
   return out;
 }
 function renderPlaylist() {
   const songs = [...S.songs].sort((a, b) => b.addedAt.localeCompare(a.addedAt));
   view.innerHTML = `
-    <section class="lead"><span class="eyebrow">Ma playlist</span><h1>${songs.length} chanson${songs.length > 1 ? 's' : ''}</h1></section>
+    <section class="lead"><span class="eyebrow">Mes chansons</span><h1>${songs.length} chanson${songs.length > 1 ? 's' : ''}</h1></section>
     <section class="panel">
       <h3>Ajouter une chanson</h3>
       <form id="addOne" class="stack">
-        <div class="row"><div class="field grow"><label for="t">Titre</label><input id="t" required placeholder="Someone Like You"></div>
-        <div class="field grow"><label for="ar">Artiste</label><input id="ar" required placeholder="Adele"></div></div>
-        <div><button>Ajouter</button></div>
+        <div class="row"><div class="field grow"><label for="t">Titre de la chanson (en anglais)</label><input id="t" required placeholder="Someone Like You"></div>
+        <div class="field grow"><label for="ar">Artiste <span class="muted">(facultatif)</span></label><input id="ar" placeholder="Adele"></div></div>
+        <div><button id="addGo">Ajouter et créer la leçon</button></div>
       </form>
-      <details><summary>Importer toute une playlist Apple Music</summary>
+      <details><summary>Ajouter plusieurs chansons d'un coup</summary>
         <div class="stack" style="margin-top:8px">
-          <p class="small muted">Sur Mac, dans l'app Musique : ouvre ta playlist, sélectionne tous les morceaux (⌘A), copie (⌘C) et colle ici. Sur iPhone, écris une chanson par ligne : <code>Titre - Artiste</code>.</p>
-          <textarea id="paste" placeholder="Blinding Lights - The Weeknd&#10;Someone Like You - Adele"></textarea>
-          <div><button id="importBtn" type="button">Importer la liste</button></div>
+          <p class="small muted">Une chanson par ligne. Tu peux ajouter l'artiste après un tiret : <code>Titre - Artiste</code>.</p>
+          <textarea id="paste" placeholder="Blinding Lights - The Weeknd&#10;Someone Like You&#10;Perfect - Ed Sheeran"></textarea>
+          <div><button id="importBtn" type="button">Ajouter la liste</button></div>
         </div>
       </details>
     </section>
     <section class="panel">
-      ${songs.length ? `<div class="tracks">${songs.map((s) => `<a class="track" href="#song-${s.id}">${sleeve(s)}<span class="grow"><div class="t">${esc(s.title)}</div><div class="a">${esc(s.artist)}</div></span>${s.lesson ? `<span class="tag ok">Leçon · ${esc(s.lesson.level)}</span>` : '<span class="tag">À étudier</span>'}</a>`).join('')}</div>`
-        : `<div class="empty"><p>Ta playlist est vide.</p><p class="small">Ajoute ta première chanson ci-dessus.</p></div>`}
+      ${songs.length ? `<div class="tracks">${songs.map((s) => `<a class="track" href="#song-${s.id}">${sleeve(s)}<span class="grow"><div class="t">${esc(s.title)}</div><div class="a">${esc(by(s))}</div></span>${s.lesson ? `<span class="tag ok">Leçon · ${esc(s.lesson.level)}</span>` : '<span class="tag">À étudier</span>'}</a>`).join('')}</div>`
+        : `<div class="empty"><p>Aucune chanson pour l'instant.</p><p class="small">Écris le titre de ta première chanson ci-dessus.</p></div>`}
     </section>`;
   document.getElementById('addOne').onsubmit = (e) => {
     e.preventDefault();
-    const n = addSongs([{ title: document.getElementById('t').value, artist: document.getElementById('ar').value }]);
-    toast(n ? 'Chanson ajoutée' : 'Elle est déjà dans ta playlist');
-    renderPlaylist();
+    const title = document.getElementById('t').value.trim(), artist = document.getElementById('ar').value.trim();
+    const n = addSongs([{ title, artist }]);
+    const s = S.songs.find((x) => x.title.toLowerCase() === title.toLowerCase() && x.artist.toLowerCase() === artist.toLowerCase());
+    if (!n) toast('Elle est déjà dans ta liste');
+    if (s) { autoLesson = s.id; location.hash = '#song-' + s.id; } else renderPlaylist();
   };
   document.getElementById('importBtn').onclick = () => {
     const items = parseList(document.getElementById('paste').value);
-    if (!items.length) return toast('Aucune chanson reconnue. Format : Titre - Artiste');
-    toast(`${addSongs(items)} chanson(s) importée(s)`);
+    if (!items.length) return toast('Écris au moins un titre.');
+    toast(`${addSongs(items)} chanson(s) ajoutée(s)`);
     renderPlaylist();
   };
 }
@@ -500,24 +512,23 @@ function renderPlaylist() {
 // ================= Leçon =================
 function renderSong(id) {
   const s = S.songs.find((x) => x.id === id);
-  if (!s) { view.innerHTML = `<div class="panel"><p>Cette chanson n'est plus dans ta playlist.</p><a href="#playlist">Retour à la playlist</a></div>`; return; }
+  if (!s) { view.innerHTML = `<div class="panel"><p>Cette chanson n'est plus dans ta liste.</p><a href="#playlist">Retour à mes chansons</a></div>`; return; }
   const L = s.lesson;
   view.innerHTML = `
     <section class="row" style="gap:16px;flex-wrap:nowrap">${sleeve(s, true)}
-      <div class="grow stack" style="gap:6px"><h1>${esc(s.title)}</h1><div class="muted">${esc(s.artist)}</div>
+      <div class="grow stack" style="gap:6px"><h1>${esc(s.title)}</h1><div class="muted">${esc(by(s))}</div>
       ${L ? `<div class="row" style="gap:6px"><span class="tag cefr">Niveau ${esc(L.level)}</span>${L.themes.map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}</div></section>
-    <div class="row"><a class="btn alt sm" href="${appleLink(s)}" target="_blank" rel="noopener" id="listen">Écouter sur Apple Music ↗</a><button class="bare sm" id="del">Retirer de la playlist</button></div>
+    <div class="row"><button class="bare sm" id="del">Retirer de mes chansons</button></div>
     <section class="panel">
       <h3>${L ? 'Refaire la leçon' : "Créer ma leçon avec l'IA"}</h3>
-      <details ${L ? '' : 'open'}><summary>Coller les paroles (facultatif, pour une analyse plus précise)</summary>
-        <div class="stack" style="margin-top:8px"><p class="small muted">Copie-les depuis l'onglet Paroles d'Apple Music. Elles servent uniquement à l'analyse et ne sont pas enregistrées.</p>
+      <details><summary>Coller les paroles (facultatif, pour une analyse plus précise)</summary>
+        <div class="stack" style="margin-top:8px"><p class="small muted">Utile si l'IA ne connaît pas la chanson. Les paroles servent uniquement à l'analyse et ne sont pas enregistrées.</p>
         <textarea id="lyrics" placeholder="Colle les paroles ici…"></textarea></div>
       </details>
       <div><button id="go" ${sample ? '' : 'disabled'}>${L ? 'Régénérer la leçon' : 'Générer la leçon'}</button></div>
       ${sample ? '' : '<p class="small muted">L’IA n’est disponible que sur la page publiée dans claude.ai.</p>'}
     </section>
     <div id="lesson" class="stack">${L ? lessonHtml(L) : ''}</div>`;
-  document.getElementById('listen').onclick = () => log('listen', { songId: s.id, title: s.title, artist: s.artist });
   twoStep(document.getElementById('del'), 'Confirmer le retrait ?', () => {
     S.songs = S.songs.filter((x) => x.id !== s.id); persist('songs', s.id, null);
     location.hash = '#playlist';
@@ -529,7 +540,9 @@ function renderSong(id) {
       const raw = await sample.json(LESSON_PROMPT(s, document.getElementById('lyrics').value.trim()), { modelTier: 'default' });
       const lesson = cleanLesson(raw || {});
       if (!lesson.vocabulary.length && !lesson.grammar.length) throw new Error('la leçon reçue est vide.');
-      s.lesson = lesson; saveSong(s);
+      s.lesson = lesson;
+      if (!s.artist && lesson.artist) s.artist = lesson.artist;
+      saveSong(s);
       let added = 0;
       for (const v of lesson.vocabulary) {
         if (S.vocab.some((w) => w.word.toLowerCase() === v.word.toLowerCase())) continue;
@@ -544,7 +557,10 @@ function renderSong(id) {
     }
   };
   bindSay();
+  // Une chanson qui vient d'être ajoutée lance sa leçon tout de suite.
+  if (autoLesson === s.id) { autoLesson = null; if (sample && !L) document.getElementById('go').click(); }
 }
+let autoLesson = null;
 function grammarHtml(g) {
   return `<div class="stack" style="gap:6px"><h3>${esc(g.topic)}</h3><p>${esc(g.rule_fr)}</p>
     ${g.song_example ? `<p class="quote">${esc(g.song_example)} <button class="bare sm" data-say="${esc(g.song_example)}" aria-label="Écouter">🔊</button></p>` : ''}
@@ -556,6 +572,9 @@ function lessonHtml(L) {
   return `
     <section class="panel"><span class="eyebrow">Interprétation</span><p>${esc(L.interpretation_fr)}</p>
       ${L.mood ? `<p class="small muted">Ambiance : ${esc(L.mood)}</p>` : ''}${L.fun_fact_fr ? `<p class="small">💡 ${esc(L.fun_fact_fr)}</p>` : ''}</section>
+    ${(L.translation || []).length ? `<section class="panel"><span class="eyebrow">Traduction${L.title_fr ? ` · « ${esc(L.title_fr)} »` : ''}</span>
+      ${L.translation.map((p) => `<div class="stack" style="gap:4px">${p.part ? `<h3>${esc(p.part)}</h3>` : ''}<p>${esc(p.meaning_fr)}</p></div>`).join('')}</section>` : ''}
+    ${(L.key_lines || []).length ? `<section class="panel"><span class="eyebrow">Les vers clés, traduits</span><div>${L.key_lines.map((k) => `<div class="item"><button class="bare sm" data-say="${esc(k.line)}" aria-label="Écouter">🔊</button><div class="grow"><div class="word">${esc(k.line)}</div><div>→ ${esc(k.translation_fr)}</div>${k.note_fr ? `<div class="small muted">${esc(k.note_fr)}</div>` : ''}</div></div>`).join('')}</div></section>` : ''}
     ${L.grammar.length ? `<section class="panel"><span class="eyebrow">Grammaire</span>${L.grammar.map(grammarHtml).join('<hr>')}</section>` : ''}
     ${L.vocabulary.length ? `<section class="panel"><span class="eyebrow">Vocabulaire · ajouté à tes mots</span><div>${L.vocabulary.map((v) => `<div class="item"><button class="bare sm" data-say="${esc(v.word)}" aria-label="Prononcer ${esc(v.word)}">🔊</button><div class="grow"><span class="word">${esc(v.word)}</span> ${v.type ? `<span class="tag">${esc(v.type)}</span>` : ''} → ${esc(v.translation)}${v.example ? `<div class="small muted"><i>${esc(v.example)}</i></div>` : ''}${v.note ? `<div class="small">${esc(v.note)}</div>` : ''}</div></div>`).join('')}</div></section>` : ''}
     ${L.expressions.length ? `<section class="panel"><span class="eyebrow">Expressions et argot</span><div>${L.expressions.map((x) => `<div class="item"><button class="bare sm" data-say="${esc(x.expression)}" aria-label="Prononcer">🔊</button><div class="grow"><span class="word">${esc(x.expression)}</span> → ${esc(x.meaning_fr)}<div class="small muted">${esc(x.usage_fr)}</div></div></div>`).join('')}</div></section>` : ''}
@@ -569,7 +588,7 @@ function renderGrammar() {
   const all = Object.values(groups).sort((a, b) => b.list.length - a.list.length);
   view.innerHTML = `<section class="lead"><span class="eyebrow">Grammaire</span><h1>${all.length} règle${all.length > 1 ? 's' : ''} découverte${all.length > 1 ? 's' : ''}</h1><p class="muted">Toutes les règles tirées de tes chansons, regroupées par thème.</p></section>
     ${all.length ? all.map((gr) => `<section class="panel"><div class="row spread"><h2>${esc(gr.topic)}</h2><span class="tag">${gr.list.length} chanson${gr.list.length > 1 ? 's' : ''}</span></div>
-      ${gr.list.map(({ g, s }) => `<details><summary>${esc(s.title)} · ${esc(s.artist)}</summary><div class="stack" style="margin-top:8px">${grammarHtml(g)}<a class="small" href="#song-${s.id}">Voir la leçon complète</a></div></details>`).join('')}</section>`).join('')
+      ${gr.list.map(({ g, s }) => `<details><summary>${esc(songName(s))}</summary><div class="stack" style="margin-top:8px">${grammarHtml(g)}<a class="small" href="#song-${s.id}">Voir la leçon complète</a></div></details>`).join('')}</section>`).join('')
       : `<div class="panel empty"><p>Pas encore de règle.</p><p class="small">Étudie une chanson pour voir apparaître tes premiers cours.</p><a class="btn" href="#playlist">Choisir une chanson</a></div>`}`;
   bindSay();
 }
