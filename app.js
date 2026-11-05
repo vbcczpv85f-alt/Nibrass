@@ -89,6 +89,8 @@ const defaultState = () => ({
   incomes: [],
   expenses: [],
   redbull: { price: 1.9, weeklyLimit: 3, startDate: todayISO() },
+  exSettings: {},
+  restPrefs: { compound: 150, isolation: 90, auto: true, sound: true },
   settings: { apiKey: '', model: 'claude-opus-5-5' },
 });
 
@@ -102,7 +104,7 @@ function load() {
     if (!raw) return defaultState();
     const d = defaultState();
     const s = JSON.parse(raw);
-    return { ...d, ...s, goals: { ...d.goals, ...s.goals }, profile: { ...d.profile, ...s.profile }, redbull: { ...d.redbull, ...s.redbull }, settings: { ...d.settings, ...s.settings }, templates: { ...d.templates, ...s.templates } };
+    return { ...d, ...s, goals: { ...d.goals, ...s.goals }, profile: { ...d.profile, ...s.profile }, redbull: { ...d.redbull, ...s.redbull }, restPrefs: { ...d.restPrefs, ...s.restPrefs }, exSettings: { ...s.exSettings }, settings: { ...d.settings, ...s.settings }, templates: { ...d.templates, ...s.templates } };
   } catch {
     return defaultState();
   }
@@ -205,13 +207,10 @@ function renderSport(v) {
   const month = todayISO().slice(0, 7);
   const thisMonth = state.workouts.filter(w => w.date.startsWith(month));
   const streak = weekStreak();
+  const tabs = [['seances', 'Séances'], ['progression', 'Progression'], ['pauses', 'Pauses'], ['historique', 'Historique']];
 
   v.innerHTML = `
-    <div class="seg">
-      <button data-st="seances" class="${ui.sportTab === 'seances' ? 'active' : ''}">Séances</button>
-      <button data-st="historique" class="${ui.sportTab === 'historique' ? 'active' : ''}">Historique</button>
-      <button data-st="records" class="${ui.sportTab === 'records' ? 'active' : ''}">Records</button>
-    </div>
+    <div class="seg">${tabs.map(([k, l]) => `<button data-st="${k}" class="${ui.sportTab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
     <div id="sport-body"></div>`;
   $$('[data-st]', v).forEach(b => b.addEventListener('click', () => { ui.sportTab = b.dataset.st; renderSport(v); }));
   const body = $('#sport-body', v);
@@ -251,8 +250,10 @@ function renderSport(v) {
         <span class="muted">›</span></div>`;
     }).join('')}</div>` : `<div class="card empty">Aucune séance enregistrée pour l’instant.<br>Lance ta première séance 💪</div>`;
     $$('[data-w]', body).forEach(el => el.addEventListener('click', () => openWorkout(null, el.dataset.w)));
+  } else if (ui.sportTab === 'progression') {
+    renderProgression(body);
   } else {
-    body.innerHTML = renderRecords();
+    renderPauses(body);
   }
 }
 
@@ -276,38 +277,213 @@ function weekStrip() {
   </div></div>`;
 }
 
-function renderRecords() {
-  const best = {};
-  for (const w of state.workouts) for (const e of (w.exercises || [])) for (const s of e.sets) {
-    const wt = num(s.w), rp = num(s.r); if (!rp) continue;
-    const e1rm = wt * (1 + rp / 30);
-    const cur = best[e.name];
-    if (!cur || e1rm > cur.e1rm) best[e.name] = { w: wt, r: rp, e1rm, date: w.date };
+/* ---------------- Surcharge progressive ---------------- */
+
+const COMPOUND_RE = /(développé|soulevé|squat|rowing barre|traction|dips|militaire|presse|hip thrust|fente)/i;
+const REST_OPTIONS = [30, 45, 60, 75, 90, 120, 150, 180, 210, 240, 300];
+
+function isCompound(name) { return COMPOUND_RE.test(name); }
+function fmtKg(n) { return (Math.round(n * 100) / 100).toLocaleString('fr-FR'); }
+
+// Réglages d'un exercice : pause, fourchette de reps, palier de charge.
+function exCfg(name) {
+  const c = isCompound(name);
+  return { rest: c ? state.restPrefs.compound : state.restPrefs.isolation, repMin: c ? 6 : 10, repMax: c ? 10 : 15, inc: c ? 2.5 : 1, ...(state.exSettings[name] || {}) };
+}
+
+// Score d'une série : 1RM estimé (Epley) si chargée, sinon nombre de reps (poids du corps).
+function setScore(s) { const w = num(s.w), r = num(s.r); if (!r) return 0; return w > 0 ? w * (1 + r / 30) : r; }
+
+function exHistory(name, excludeId) {
+  return state.workouts
+    .filter(w => w.id !== excludeId && w.exercises && w.exercises.some(e => e.name === name))
+    .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt - b.createdAt)
+    .map(w => {
+      const sets = w.exercises.filter(e => e.name === name).flatMap(e => e.sets).filter(s => num(s.r) > 0);
+      if (!sets.length) return null;
+      const best = sets.reduce((a, s) => setScore(s) > setScore(a) ? s : a, sets[0]);
+      const loaded = sets.some(s => num(s.w) > 0);
+      return {
+        id: w.id, date: w.date, sets, best, loaded,
+        score: setScore(best),
+        volume: sets.reduce((a, s) => a + num(s.w) * num(s.r), 0),
+        reps: sets.reduce((a, s) => a + num(s.r), 0),
+      };
+    }).filter(Boolean);
+}
+
+function progressStatus(hist) {
+  if (!hist.length) return { k: 'none', label: 'Pas encore fait', cls: '' };
+  if (hist.length === 1) return { k: 'new', label: '🆕 1ʳᵉ séance', cls: '' };
+  let maxI = 0;
+  hist.forEach((h, i) => { if (h.score > hist[maxI].score) maxI = i; });
+  const since = hist.length - 1 - maxI;
+  const last = hist[hist.length - 1], prev = hist[hist.length - 2];
+  if (since === 0 && last.score > prev.score) return { k: 'up', label: '📈 Record', cls: 'good', since };
+  if (since >= 3) return { k: 'stuck', label: `⏸️ Stagnation (${since} séances)`, cls: 'warn', since };
+  if (last.score < prev.score * 0.97) return { k: 'down', label: '📉 En baisse', cls: 'bad', since };
+  return { k: 'stable', label: '➖ Stable', cls: '', since };
+}
+
+// Double progression : on monte les reps jusqu'au haut de la fourchette, puis la charge.
+function nextTarget(name, sets) {
+  const cfg = exCfg(name);
+  const valid = (sets || []).filter(s => num(s.r) > 0);
+  if (!valid.length) return null;
+  const topW = Math.max(...valid.map(s => num(s.w)));
+  const minR = Math.min(...valid.filter(s => num(s.w) === topW).map(s => num(s.r)));
+  if (topW === 0) {
+    return { w: '', r: minR + 1, up: false, text: `Vise ${minR + 1} reps par série${minR + 1 > cfg.repMax ? ' — ou ajoute du lest' : ''}` };
   }
+  if (minR >= cfg.repMax) {
+    const nw = Math.round((topW + cfg.inc) * 100) / 100;
+    return { w: nw, r: cfg.repMin, up: true, text: `Monte à ${fmtKg(nw)} kg × ${cfg.repMin} reps (tu as validé ${cfg.repMax} reps à ${fmtKg(topW)} kg)` };
+  }
+  const tr = Math.min(cfg.repMax, minR + 1);
+  return { w: topW, r: tr, up: false, text: `Garde ${fmtKg(topW)} kg et vise ${tr} reps sur chaque série (objectif ${cfg.repMax} avant d’ajouter ${fmtKg(cfg.inc)} kg)` };
+}
+
+function sparkline(values, color = 'var(--accent)', h = 36) {
+  if (values.length < 2) return '';
+  const min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
+  const pts = values.map((v, i) => `${(i / (values.length - 1) * 100).toFixed(2)},${(h - 3 - (v - min) / span * (h - 6)).toFixed(2)}`).join(' ');
+  return `<svg viewBox="0 0 100 ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+
+function allExerciseNames() {
+  const set = new Set();
+  for (const w of state.workouts) for (const e of (w.exercises || [])) if (e.name) set.add(e.name);
+  for (const k of Object.keys(state.templates)) for (const n of state.templates[k]) set.add(n);
+  return [...set];
+}
+
+function renderProgression(body) {
   const hy = state.workouts.filter(w => w.type === 'hyrox' && w.hyrox.total > 0 && w.hyrox.full).sort((a, b) => a.hyrox.total - b.hyrox.total)[0];
-  const runs = state.workouts.filter(w => w.type === 'cardio' && num(w.cardio.distance) > 0);
-  const longest = runs.sort((a, b) => num(b.cardio.distance) - num(a.cardio.distance))[0];
-  const rows = Object.entries(best).sort((a, b) => a[0].localeCompare(b[0]));
-  return `
+  const longest = state.workouts.filter(w => w.type === 'cardio' && num(w.cardio.distance) > 0).sort((a, b) => num(b.cardio.distance) - num(a.cardio.distance))[0];
+  const rows = allExerciseNames().map(n => ({ n, hist: exHistory(n) })).filter(x => x.hist.length)
+    .sort((a, b) => b.hist[b.hist.length - 1].date.localeCompare(a.hist[a.hist.length - 1].date));
+  const stuck = rows.filter(x => progressStatus(x.hist).k === 'stuck').length;
+  const ups = rows.filter(x => progressStatus(x.hist).k === 'up').length;
+
+  body.innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="v" style="color:var(--accent)">${ups}</div><div class="l">exos en record</div></div>
+      <div class="stat"><div class="v" style="color:var(--orange)">${stuck}</div><div class="l">en stagnation</div></div>
+      <div class="stat"><div class="v">${rows.length}</div><div class="l">exos suivis</div></div>
+    </div>
+    <div class="card small muted" style="margin-top:12px">
+      <b style="color:var(--text)">Comment ça marche :</b> double progression. Pour chaque exercice tu as une fourchette de reps (ex. 8–12).
+      Tant que tu n’atteins pas le haut de la fourchette sur toutes tes séries, tu gardes la charge et tu ajoutes des reps.
+      Quand c’est validé, tu montes la charge d’un palier. L’objectif du jour s’affiche directement pendant ta séance.
+    </div>
+    <h2>Musculation</h2>
+    ${rows.length ? rows.map(({ n, hist }) => {
+      const st = progressStatus(hist);
+      const last = hist[hist.length - 1];
+      const tgt = nextTarget(n, last.sets);
+      const best = hist.reduce((a, h) => h.score > a.score ? h : a, hist[0]);
+      const first = hist[0];
+      const gain = first.score ? (last.score - first.score) / first.score * 100 : 0;
+      return `<div class="card" data-ex="${esc(n)}" style="cursor:pointer">
+        <div class="row between"><b class="grow">${esc(n)}</b><span class="pill ${st.cls}">${st.label}</span></div>
+        <div class="row between small muted" style="margin:6px 0">
+          <span>Dernière : <b style="color:var(--text)">${last.best.w ? fmtKg(num(last.best.w)) + ' kg' : 'PDC'} × ${last.best.r}</b></span>
+          <span>${last.loaded ? `1RM est. ${r0(last.score)} kg` : `${r0(last.score)} reps max`}${hist.length > 1 ? ` · <span style="color:${gain >= 0 ? 'var(--accent)' : 'var(--red)'}">${gain >= 0 ? '+' : ''}${r0(gain)} %</span>` : ''}</span>
+        </div>
+        ${sparkline(hist.map(h => h.score))}
+        ${tgt ? `<div class="target small">🎯 Prochaine séance : ${esc(tgt.text)}</div>` : ''}
+        <div class="muted small" style="margin-top:4px">Record : ${best.best.w ? fmtKg(num(best.best.w)) + ' kg' : 'PDC'} × ${best.best.r} (${fmtDate(best.date)}) · ${hist.length} séance${hist.length > 1 ? 's' : ''}</div>
+      </div>`;
+    }).join('') : '<div class="card empty">Ta progression apparaîtra après tes premières séances de muscu.</div>'}
+    <h2>Cardio & Hyrox</h2>
     <div class="grid2">
       <div class="stat"><div class="l">Meilleur Hyrox complet</div><div class="v">${hy ? secToClock(hy.hyrox.total) : '—'}</div></div>
       <div class="stat"><div class="l">Plus longue sortie cardio</div><div class="v">${longest ? longest.cardio.distance + ' km' : '—'}</div></div>
+    </div>`;
+  $$('[data-ex]', body).forEach(el => el.addEventListener('click', () => openExercise(el.dataset.ex, () => renderProgression(body))));
+}
+
+function restSelect(id, value) {
+  const opts = REST_OPTIONS.includes(+value) ? REST_OPTIONS : [...REST_OPTIONS, +value].sort((a, b) => a - b);
+  return `<select id="${id}">${opts.map(s => `<option value="${s}" ${+value === s ? 'selected' : ''}>${secToClock(s)}</option>`).join('')}</select>`;
+}
+
+function openExercise(name, onDone) {
+  const hist = exHistory(name);
+  const cfg = exCfg(name);
+  const st = progressStatus(hist);
+  const last = hist[hist.length - 1];
+  const tgt = last ? nextTarget(name, last.sets) : null;
+  const vals = hist.map(h => h.score);
+  const s = openSheet(`📈 ${esc(name)}`, `
+    <div class="row between" style="margin-bottom:10px"><span class="pill ${st.cls}">${st.label}</span><span class="muted small">${hist.length} séance${hist.length > 1 ? 's' : ''}</span></div>
+    ${vals.length > 1 ? `<div class="card"><div class="muted small" style="margin-bottom:6px">${last.loaded ? '1RM estimé (kg)' : 'Reps max'} · de ${r0(Math.min(...vals))} à ${r0(Math.max(...vals))}</div>${sparkline(vals, 'var(--accent)', 90)}</div>` : ''}
+    ${tgt ? `<div class="target">🎯 <b>Prochaine séance</b><br>${esc(tgt.text)}</div>` : ''}
+    ${st.k === 'stuck' ? `<div class="card small" style="border-color:var(--orange)"><b>Conseils anti-stagnation</b><ul style="margin:6px 0 0;padding-left:18px">
+      <li>Vérifie ton sommeil et tes protéines (onglet Nutrition).</li>
+      <li>Fais une semaine plus légère (−10 % de charge) puis repars.</li>
+      <li>Change la fourchette de reps (ex. 6–8 au lieu de 8–12) ou une variante de l’exercice.</li>
+      <li>Allonge un peu la pause entre les séries.</li></ul></div>` : ''}
+    <div class="card">
+      <h3>Réglages de l’exercice</h3>
+      <div class="grid2">
+        <label class="field"><span>Reps min</span><input id="x-min" inputmode="numeric" value="${cfg.repMin}"></label>
+        <label class="field"><span>Reps max</span><input id="x-max" inputmode="numeric" value="${cfg.repMax}"></label>
+        <label class="field"><span>Palier de charge (kg)</span><input id="x-inc" inputmode="decimal" value="${String(cfg.inc).replace('.', ',')}"></label>
+        <label class="field"><span>Pause entre séries</span>${restSelect('x-rest', cfg.rest)}</label>
+      </div>
+      <button class="btn primary block" id="x-save">Enregistrer</button>
     </div>
-    <h2>Musculation · meilleures séries</h2>
-    ${rows.length ? `<div class="card list">${rows.map(([n, b]) => `<div class="list-item"><div class="grow"><b>${esc(n)}</b><div class="muted small">${fmtDate(b.date)}</div></div>
-      <div style="text-align:right"><b>${b.w} kg × ${b.r}</b><div class="muted small">1RM estimé ${r0(b.e1rm)} kg</div></div></div>`).join('')}</div>`
-      : '<div class="card empty">Les records apparaîtront après tes premières séances.</div>'}`;
+    <h3>Historique</h3>
+    ${hist.length ? `<div class="card list">${[...hist].reverse().map(h => `<div class="list-item"><div class="grow"><b>${fmtDate(h.date)}</b>
+      <div class="small muted">${h.sets.map(x => `${x.w ? fmtKg(num(x.w)) : 'PDC'}×${x.r}`).join(' · ')}</div></div>
+      <div style="text-align:right" class="small"><b>${h.loaded ? r0(h.score) + ' kg' : r0(h.score) + ' reps'}</b><div class="muted">vol. ${r0(h.volume).toLocaleString('fr-FR')} kg</div></div></div>`).join('')}</div>`
+      : '<div class="card empty">Pas encore de séance avec cet exercice.</div>'}
+  `);
+  $('#x-save', s).addEventListener('click', () => {
+    const repMin = Math.max(1, r0(num($('#x-min', s).value))), repMax = Math.max(repMin, r0(num($('#x-max', s).value)));
+    state.exSettings[name] = { repMin, repMax, inc: num($('#x-inc', s).value) || cfg.inc, rest: +$('#x-rest', s).value };
+    save(); closeSheet(); if (onDone) onDone(); toast('Réglages enregistrés');
+  });
 }
 
-function lastPerf(type, exName, excludeId) {
-  const prev = state.workouts.filter(w => w.id !== excludeId && w.exercises && w.exercises.some(e => e.name === exName))
-    .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt)[0];
-  if (!prev) return null;
-  const e = prev.exercises.find(x => x.name === exName);
-  return { date: prev.date, sets: e.sets };
+/* ---------------- Pauses ---------------- */
+
+function renderPauses(body) {
+  const rp = state.restPrefs;
+  const names = allExerciseNames().sort((a, b) => a.localeCompare(b));
+  body.innerHTML = `
+    <div class="card">
+      <h3>⏱️ Pauses par défaut</h3>
+      <div class="grid2">
+        <label class="field"><span>Exos lourds (polyarticulaires)</span>${restSelect('rp-comp', rp.compound)}</label>
+        <label class="field"><span>Exos d’isolation</span>${restSelect('rp-iso', rp.isolation)}</label>
+      </div>
+      <label class="row" style="margin-bottom:10px"><input type="checkbox" id="rp-auto" style="width:auto" ${rp.auto ? 'checked' : ''}> <span>Lancer la pause automatiquement quand je valide une série ✓</span></label>
+      <label class="row"><input type="checkbox" id="rp-sound" style="width:auto" ${rp.sound ? 'checked' : ''}> <span>Bip sonore à la fin de la pause</span></label>
+    </div>
+    <div class="card small muted">
+      <b style="color:var(--text)">Repères :</b> force (1–5 reps) 3–5 min · hypertrophie sur exos lourds 2–3 min · isolation 60–90 s · circuits / Hyrox 30–60 s.
+    </div>
+    <h2>Pause par exercice</h2>
+    <div class="card list">${names.map((n, i) => `<div class="list-item"><div class="grow"><b>${esc(n)}</b><div class="muted small">${isCompound(n) ? 'Polyarticulaire' : 'Isolation'}${state.exSettings[n] && state.exSettings[n].rest ? ' · personnalisé' : ''}</div></div>
+      <div style="width:96px">${restSelect('rx-' + i, exCfg(n).rest)}</div></div>`).join('')}</div>`;
+
+  const saveDefaults = () => {
+    rp.compound = +$('#rp-comp', body).value; rp.isolation = +$('#rp-iso', body).value;
+    rp.auto = $('#rp-auto', body).checked; rp.sound = $('#rp-sound', body).checked;
+    save(); renderPauses(body); toast('Pauses enregistrées');
+  };
+  ['#rp-comp', '#rp-iso', '#rp-auto', '#rp-sound'].forEach(sel => $(sel, body).addEventListener('change', saveDefaults));
+  names.forEach((n, i) => $('#rx-' + i, body).addEventListener('change', e => {
+    state.exSettings[n] = { ...(state.exSettings[n] || {}), rest: +e.target.value }; save(); toast(`Pause ${n} : ${secToClock(+e.target.value)}`);
+  }));
 }
 
-let workoutTimer = null, restTimer = null;
+/* ---------------- Séance en cours ---------------- */
+
+let workoutTimer = null, restTimer = null, restEnd = 0, audioCtx = null;
+const openStats = new Set();
 
 function openWorkout(type, existingId) {
   let w;
@@ -324,75 +500,103 @@ function openWorkout(type, existingId) {
   const t = SESSION_TYPES[type];
   const isNew = !existingId;
 
-  const draw = () => {
-    const s = openSheet(`${t.emoji} ${t.short}`, `
-      ${isNew ? `<div class="timerbar">
-          <div><div class="muted small">Durée séance</div><div class="t" id="wk-time">0:00</div></div>
-          ${t.kind === 'strength' ? `<div style="text-align:right"><div class="muted small">Repos</div><div class="row"><span class="t rest" id="rest-time">—</span>
-            <button class="btn sm" data-rest="60">60s</button><button class="btn sm" data-rest="90">90s</button><button class="btn sm" data-rest="120">2m</button></div></div>` : ''}
-        </div>` : ''}
-      <label class="field"><span>Date</span><input type="date" id="wk-date" value="${w.date}"></label>
-      <div id="wk-body"></div>
-      <label class="field"><span>Notes / ressenti</span><textarea id="wk-notes" placeholder="Énergie, douleurs, sensations…">${esc(w.notes)}</textarea></label>
-      <div class="row" style="margin-top:8px">
-        ${!isNew ? '<button class="btn danger" id="wk-del">Supprimer</button>' : ''}
-        <button class="btn primary grow" id="wk-save">${isNew ? 'Terminer & enregistrer' : 'Enregistrer'}</button>
-      </div>
-      ${t.kind === 'strength' ? '<button class="btn ghost block" style="margin-top:10px" id="wk-tpl">💾 Utiliser ces exercices comme modèle par défaut</button>' : ''}
-    `, () => { clearInterval(workoutTimer); clearInterval(restTimer); });
+  const s = openSheet(`${t.emoji} ${t.short}`, `
+    ${isNew ? `<div class="timerbar sticky">
+        <div><div class="muted small">Durée séance</div><div class="t" id="wk-time">0:00</div></div>
+        <div style="text-align:right"><div class="muted small">Pause</div>
+          <div class="row" style="justify-content:flex-end;gap:6px"><span class="t rest" id="rest-time">—</span>
+          <button class="btn sm" data-rest-adj="-15">−15</button><button class="btn sm" data-rest-adj="15">+15</button><button class="btn sm" data-rest-adj="0">✕</button></div></div>
+      </div>` : ''}
+    <label class="field"><span>Date</span><input type="date" id="wk-date" value="${w.date}"></label>
+    <div id="wk-body"></div>
+    <label class="field"><span>Notes / ressenti</span><textarea id="wk-notes" placeholder="Énergie, douleurs, sensations…">${esc(w.notes)}</textarea></label>
+    <div class="row" style="margin-top:8px">
+      ${!isNew ? '<button class="btn danger" id="wk-del">Supprimer</button>' : ''}
+      <button class="btn primary grow" id="wk-save">${isNew ? 'Terminer & enregistrer' : 'Enregistrer'}</button>
+    </div>
+    ${t.kind === 'strength' ? '<button class="btn ghost block" style="margin-top:10px" id="wk-tpl">💾 Utiliser ces exercices comme modèle par défaut</button>' : ''}
+  `, () => { clearInterval(workoutTimer); clearInterval(restTimer); restEnd = 0; });
 
-    if (isNew) {
-      const tick = () => { const el = $('#wk-time'); if (el) el.textContent = secToClock((Date.now() - w.startedAt) / 1000); };
-      tick(); clearInterval(workoutTimer); workoutTimer = setInterval(tick, 1000);
-      $$('[data-rest]', s).forEach(b => b.addEventListener('click', () => startRest(+b.dataset.rest)));
+  if (isNew) {
+    const tick = () => { const el = $('#wk-time'); if (el) el.textContent = secToClock((Date.now() - w.startedAt) / 1000); };
+    tick(); clearInterval(workoutTimer); workoutTimer = setInterval(tick, 1000);
+    $$('[data-rest-adj]', s).forEach(b => b.addEventListener('click', () => {
+      const d = +b.dataset.restAdj;
+      if (d === 0) { restEnd = 0; clearInterval(restTimer); const el = $('#rest-time'); el.textContent = '—'; el.classList.remove('running'); return; }
+      if (!restEnd || restEnd < Date.now()) startRest(Math.max(15, d)); else { restEnd = Math.max(Date.now() + 1000, restEnd + d * 1000); }
+    }));
+  }
+
+  const body = $('#wk-body', s);
+  if (t.kind === 'strength') drawStrength(body, w, isNew);
+  if (t.kind === 'cardio') drawCardio(body, w, t);
+  if (t.kind === 'hyrox') drawHyrox(body, w, t);
+
+  $('#wk-date', s).addEventListener('change', e => w.date = e.target.value);
+  $('#wk-notes', s).addEventListener('input', e => w.notes = e.target.value);
+  $('#wk-save', s).addEventListener('click', () => {
+    let prs = [];
+    if (t.kind === 'strength') {
+      w.exercises = w.exercises.map(e => ({ ...e, sets: e.sets.filter(x => num(x.r) > 0) })).filter(e => e.sets.length);
+      if (!w.exercises.length) return toast('Remplis au moins une série 🙂');
+      prs = w.exercises.filter(e => {
+        const h = exHistory(e.name, w.id); if (!h.length) return false;
+        return Math.max(...e.sets.map(setScore)) > Math.max(...h.map(x => x.score));
+      }).map(e => e.name);
     }
+    if (t.kind === 'hyrox') {
+      w.hyrox.total = w.hyrox.times.reduce((a, x) => a + clockToSec(x), 0);
+      w.hyrox.full = w.hyrox.times.every(x => clockToSec(x) > 0);
+      if (!w.hyrox.total) return toast('Entre au moins un temps');
+    }
+    if (t.kind === 'cardio' && !num(w.cardio.minutes)) return toast('Indique la durée en minutes');
+    if (isNew) w.duration = Math.round((Date.now() - w.startedAt) / 1000);
+    const i = state.workouts.findIndex(x => x.id === w.id);
+    if (i >= 0) state.workouts[i] = w; else state.workouts.push(w);
+    save(); closeSheet(); render();
+    toast(prs.length ? `🏆 ${prs.length} record${prs.length > 1 ? 's' : ''} battu${prs.length > 1 ? 's' : ''} : ${prs.join(', ')}` : 'Séance enregistrée ✅');
+  });
+  const del = $('#wk-del', s);
+  if (del) del.addEventListener('click', () => {
+    if (!confirm('Supprimer cette séance ?')) return;
+    state.workouts = state.workouts.filter(x => x.id !== w.id); save(); closeSheet(); render();
+  });
+  const tpl = $('#wk-tpl', s);
+  if (tpl) tpl.addEventListener('click', () => {
+    state.templates[type] = w.exercises.map(e => e.name).filter(Boolean); save(); toast('Modèle mis à jour');
+  });
+}
 
-    const body = $('#wk-body', s);
-    if (t.kind === 'strength') drawStrength(body, w);
-    if (t.kind === 'cardio') drawCardio(body, w, t);
-    if (t.kind === 'hyrox') drawHyrox(body, w, t);
+function beep() {
+  if (!state.restPrefs.sound) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25, 0.5].forEach(t0 => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(audioCtx.destination);
+      const t = audioCtx.currentTime + t0;
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.3, t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+      o.start(t); o.stop(t + 0.2);
+    });
+  } catch { /* audio indisponible */ }
+}
 
-    $('#wk-date', s).addEventListener('change', e => w.date = e.target.value);
-    $('#wk-notes', s).addEventListener('input', e => w.notes = e.target.value);
-    $('#wk-save', s).addEventListener('click', () => {
-      if (t.kind === 'strength') {
-        w.exercises = w.exercises.map(e => ({ ...e, sets: e.sets.filter(x => num(x.r) > 0 || num(x.w) > 0) })).filter(e => e.sets.length);
-        if (!w.exercises.length) return toast('Remplis au moins une série 🙂');
-      }
-      if (t.kind === 'hyrox') {
-        w.hyrox.total = w.hyrox.times.reduce((a, x) => a + clockToSec(x), 0);
-        w.hyrox.full = w.hyrox.times.every(x => clockToSec(x) > 0);
-        if (!w.hyrox.total) return toast('Entre au moins un temps');
-      }
-      if (t.kind === 'cardio' && !num(w.cardio.minutes)) return toast('Indique la durée en minutes');
-      if (isNew) w.duration = Math.round((Date.now() - w.startedAt) / 1000);
-      const i = state.workouts.findIndex(x => x.id === w.id);
-      if (i >= 0) state.workouts[i] = w; else state.workouts.push(w);
-      save(); closeSheet(); render(); toast('Séance enregistrée ✅');
-    });
-    const del = $('#wk-del', s);
-    if (del) del.addEventListener('click', () => {
-      if (!confirm('Supprimer cette séance ?')) return;
-      state.workouts = state.workouts.filter(x => x.id !== w.id); save(); closeSheet(); render();
-    });
-    const tpl = $('#wk-tpl', s);
-    if (tpl) tpl.addEventListener('click', () => {
-      state.templates[type] = w.exercises.map(e => e.name).filter(Boolean); save(); toast('Modèle mis à jour');
-    });
-  };
-  draw();
+function unlockAudio() {
+  // iOS n'autorise le son qu'après un geste de l'utilisateur.
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch { /* */ }
 }
 
 function startRest(sec) {
   clearInterval(restTimer);
-  const end = Date.now() + sec * 1000;
+  restEnd = Date.now() + sec * 1000;
   const el = () => $('#rest-time');
   const tick = () => {
-    const left = (end - Date.now()) / 1000;
-    if (!el()) return clearInterval(restTimer);
+    if (!el() || !restEnd) return clearInterval(restTimer);
+    const left = (restEnd - Date.now()) / 1000;
     if (left <= 0) {
-      el().textContent = 'GO'; el().classList.remove('running'); clearInterval(restTimer);
+      el().textContent = 'GO'; el().classList.remove('running'); clearInterval(restTimer); restEnd = 0;
       if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+      beep(); toast('⏱️ Pause terminée — série suivante !');
       return;
     }
     el().textContent = secToClock(left); el().classList.add('running');
@@ -400,38 +604,78 @@ function startRest(sec) {
   tick(); restTimer = setInterval(tick, 250);
 }
 
-function drawStrength(body, w) {
+function drawStrength(body, w, live) {
   body.innerHTML = w.exercises.map((e, i) => {
-    const p = lastPerf(w.type, e.name, w.id);
+    const hist = exHistory(e.name, w.id);
+    const p = hist[hist.length - 1];
+    const tgt = p ? nextTarget(e.name, p.sets) : null;
+    const cfg = exCfg(e.name);
+    const bestScore = hist.length ? Math.max(...hist.map(h => h.score)) : 0;
     return `<div class="exo" data-i="${i}">
-      <div class="exo-head"><input value="${esc(e.name)}" data-name placeholder="Nom de l’exercice"><button class="icon-btn" data-rm-ex title="Retirer">🗑️</button></div>
-      ${p ? `<div class="prev">Dernière fois (${fmtDate(p.date)}) : ${p.sets.map(s => `${s.w || 0}×${s.r}`).join(' · ')}</div>` : ''}
-      <div class="set-head"><span>#</span><span>kg</span><span>reps</span><span></span></div>
-      ${e.sets.map((s, j) => `<div class="set-row" data-j="${j}"><span class="n">${j + 1}</span>
-        <input inputmode="decimal" placeholder="${p && p.sets[j] ? esc(p.sets[j].w) : 'kg'}" value="${esc(s.w)}" data-f="w">
-        <input inputmode="numeric" placeholder="${p && p.sets[j] ? esc(p.sets[j].r) : 'reps'}" value="${esc(s.r)}" data-f="r">
-        <button class="icon-btn" data-rm-set>−</button></div>`).join('')}
+      <div class="exo-head"><input value="${esc(e.name)}" data-name placeholder="Nom de l’exercice"><button class="icon-btn" data-stats title="Progression">📈</button><button class="icon-btn" data-rm-ex title="Retirer">🗑️</button></div>
+      ${p ? `<div class="prev">Dernière fois (${fmtDate(p.date)}) : ${p.sets.map(s => `${s.w ? fmtKg(num(s.w)) : 'PDC'}×${s.r}`).join(' · ')}</div>` : '<div class="prev">Première fois : choisis une charge où tu peux faire ' + cfg.repMin + '–' + cfg.repMax + ' reps propres.</div>'}
+      ${tgt ? `<div class="target small ${tgt.up ? 'up' : ''}">🎯 ${esc(tgt.text)}</div>` : ''}
+      ${openStats.has(e.name) ? `<div class="card tight" style="background:var(--card2)">
+        ${hist.length > 1 ? sparkline(hist.map(h => h.score)) : ''}
+        <div class="small muted" style="margin-top:6px">${progressStatus(hist).label}</div>
+        ${hist.slice(-5).reverse().map(x => `<div class="small">${fmtDate(x.date)} : ${x.sets.map(s => (s.w ? fmtKg(num(s.w)) : 'PDC') + '×' + s.r).join(' · ')}</div>`).join('') || '<div class="small muted">Pas encore d’historique.</div>'}
+      </div>` : ''}
+      <div class="row between small muted" style="margin-bottom:6px"><span>Fourchette ${cfg.repMin}–${cfg.repMax} reps</span>
+        <span class="row" style="gap:6px">⏱️ Pause <span style="width:84px">${restSelect('rest-' + i, cfg.rest)}</span></span></div>
+      <div class="set-head"><span>#</span><span>kg</span><span>reps</span><span>✓</span><span></span></div>
+      ${e.sets.map((s, j) => {
+        const pr = bestScore && setScore(s) > bestScore;
+        return `<div class="set-row ${s.done ? 'done' : ''}" data-j="${j}"><span class="n">${pr ? '🏆' : j + 1}</span>
+        <input inputmode="decimal" placeholder="${tgt ? esc(tgt.w === '' ? 'PDC' : fmtKg(tgt.w)) : 'kg'}" value="${esc(s.w)}" data-f="w">
+        <input inputmode="numeric" placeholder="${tgt ? tgt.r : 'reps'}" value="${esc(s.r)}" data-f="r">
+        <button class="check" data-done>${s.done ? '✓' : ''}</button>
+        <button class="icon-btn" data-rm-set>−</button></div>`;
+      }).join('')}
       <button class="btn sm ghost" data-add-set>＋ Série</button>
     </div>`;
   }).join('') + `<button class="btn block" id="add-ex" style="margin-bottom:14px">＋ Ajouter un exercice</button>`;
 
   $$('.exo', body).forEach(card => {
     const i = +card.dataset.i; const e = w.exercises[i];
-    $('[data-name]', card).addEventListener('change', ev => { e.name = ev.target.value.trim(); drawStrength(body, w); });
-    $('[data-rm-ex]', card).addEventListener('click', () => { w.exercises.splice(i, 1); drawStrength(body, w); });
+    const hist = exHistory(e.name, w.id);
+    const tgt = hist.length ? nextTarget(e.name, hist[hist.length - 1].sets) : null;
+    $('[data-name]', card).addEventListener('change', ev => { e.name = ev.target.value.trim(); drawStrength(body, w, live); });
+    $('[data-rm-ex]', card).addEventListener('click', () => { w.exercises.splice(i, 1); drawStrength(body, w, live); });
+    $('[data-stats]', card).addEventListener('click', () => {
+      if (openStats.has(e.name)) openStats.delete(e.name); else openStats.add(e.name);
+      drawStrength(body, w, live);
+    });
+    $('#rest-' + i, card).addEventListener('change', ev => {
+      state.exSettings[e.name] = { ...(state.exSettings[e.name] || {}), rest: +ev.target.value }; save();
+    });
     $('[data-add-set]', card).addEventListener('click', () => {
       const last = e.sets[e.sets.length - 1] || { w: '', r: '' };
-      e.sets.push({ w: last.w, r: last.r }); drawStrength(body, w);
+      e.sets.push({ w: last.w, r: last.r }); drawStrength(body, w, live);
     });
     $$('.set-row', card).forEach(row => {
       const j = +row.dataset.j;
       $$('input', row).forEach(inp => inp.addEventListener('input', ev => { e.sets[j][inp.dataset.f] = ev.target.value; }));
-      $('[data-rm-set]', row).addEventListener('click', () => { e.sets.splice(j, 1); drawStrength(body, w); });
+      $('[data-rm-set]', row).addEventListener('click', () => { e.sets.splice(j, 1); drawStrength(body, w, live); });
+      $('[data-done]', row).addEventListener('click', () => {
+        unlockAudio();
+        const st = e.sets[j];
+        if (st.done) { st.done = false; drawStrength(body, w, live); return; }
+        // série validée sans saisie = objectif du jour réalisé
+        if (st.w === '' && tgt && tgt.w !== '') st.w = fmtKg(tgt.w);
+        if (st.r === '' && tgt) st.r = String(tgt.r);
+        if (!num(st.r)) return toast('Indique le nombre de reps');
+        st.done = true;
+        const bestScore = hist.length ? Math.max(...hist.map(h => h.score)) : 0;
+        if (bestScore && setScore(st) > bestScore) toast(`🏆 Nouveau record sur ${e.name} !`);
+        drawStrength(body, w, live);
+        const isLastSet = j === e.sets.length - 1 && i === w.exercises.length - 1;
+        if (live && state.restPrefs.auto && !isLastSet) startRest(exCfg(e.name).rest);
+      });
     });
   });
   $('#add-ex', body).addEventListener('click', () => {
     const name = prompt('Nom de l’exercice ?'); if (!name) return;
-    w.exercises.push({ name: name.trim(), sets: [{ w: '', r: '' }, { w: '', r: '' }, { w: '', r: '' }] }); drawStrength(body, w);
+    w.exercises.push({ name: name.trim(), sets: [{ w: '', r: '' }, { w: '', r: '' }, { w: '', r: '' }] }); drawStrength(body, w, live);
   });
 }
 
