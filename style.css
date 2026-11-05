@@ -261,3 +261,15 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
 .cal-day.full { background: var(--purple); border-color: var(--purple); color: #1a1030; font-weight: 700; }
 .cal-day.half { background: #2c2440; border-color: var(--purple); color: var(--text); }
 .cal-day.today { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Protéines */
+.prot-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.prot-btn {
+  display: flex; align-items: center; gap: 10px; text-align: left; cursor: pointer;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px;
+}
+.prot-btn:active { background: var(--card2); }
+.prot-btn .e { font-size: 22px; }
+.prot-btn b { display: block; font-size: 14px; }
+.prot-btn .g { font-weight: 800; color: var(--pink); white-space: nowrap; }
+@media (min-width: 560px) { .prot-grid { grid-template-columns: 1fr 1fr; } }

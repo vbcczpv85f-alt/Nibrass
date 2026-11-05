@@ -2,7 +2,7 @@
 // Tout est stocké localement dans le navigateur (localStorage).
 
 const STORE_KEY = 'nibrass.v1';
-const APP_VERSION = '1.3 · poids & créatine';
+const APP_VERSION = '1.4 · protéines';
 const SDK_URL = 'https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.5.0/+esm';
 
 /* ------------------------------------------------------------------ */
@@ -93,6 +93,7 @@ const defaultState = () => ({
   exSettings: {},
   weights: [],
   creatine: { dose: 10, logs: {} },
+  proteinFavs: [],
   restPrefs: { compound: 150, isolation: 90, auto: true, sound: true },
   settings: { apiKey: '', model: 'claude-opus-5-5' },
 });
@@ -758,12 +759,13 @@ function ring(value, goal, color, size = 118) {
 }
 
 function renderNutrition(v) {
-  const tabs = [['journal', 'Journal'], ['poids', 'Poids'], ['creatine', 'Créatine']];
+  const tabs = [['journal', 'Journal'], ['proteines', 'Protéines'], ['poids', 'Poids'], ['creatine', 'Créatine']];
   v.innerHTML = `<div class="seg">${tabs.map(([k, l]) => `<button data-nt="${k}" class="${ui.nutTab === k ? 'active' : ''}">${l}</button>`).join('')}</div><div id="nut-body"></div>`;
   $$('[data-nt]', v).forEach(b => b.addEventListener('click', () => { ui.nutTab = b.dataset.nt; renderNutrition(v); }));
   const body = $('#nut-body', v);
   if (ui.nutTab === 'poids') renderWeight(body);
   else if (ui.nutTab === 'creatine') renderCreatine(body);
+  else if (ui.nutTab === 'proteines') renderProtein(body);
   else renderJournal(body);
 }
 
@@ -878,6 +880,138 @@ function renderWeight(body) {
     if (!confirm('Supprimer cette pesée ?')) return;
     state.weights = state.weights.filter(p => p.id !== b.dataset.wdel); save(); renderWeight(body);
   }));
+}
+
+/* ---------------- Protéines ---------------- */
+
+const PROTEIN_PRESETS = [
+  { id: 'whey', name: 'Shaker whey (30 g)', emoji: '🥤', protein: 24, kcal: 120, carbs: 3, fat: 1.5 },
+  { id: 'oeufs', name: '3 œufs', emoji: '🥚', protein: 19, kcal: 215, carbs: 1, fat: 15 },
+  { id: 'poulet', name: 'Blanc de poulet 150 g', emoji: '🍗', protein: 46, kcal: 240, carbs: 0, fat: 5 },
+  { id: 'steak', name: 'Steak haché 5 % (125 g)', emoji: '🥩', protein: 26, kcal: 165, carbs: 0, fat: 6 },
+  { id: 'thon', name: 'Thon en boîte (140 g)', emoji: '🐟', protein: 36, kcal: 160, carbs: 0, fat: 1.5 },
+  { id: 'saumon', name: 'Saumon 125 g', emoji: '🍣', protein: 25, kcal: 250, carbs: 0, fat: 17 },
+  { id: 'skyr', name: 'Skyr (150 g)', emoji: '🥛', protein: 16, kcal: 95, carbs: 6, fat: 0.3 },
+  { id: 'fb', name: 'Fromage blanc 0 % (200 g)', emoji: '🍶', protein: 15, kcal: 100, carbs: 8, fat: 0.4 },
+  { id: 'barre', name: 'Barre protéinée', emoji: '🍫', protein: 20, kcal: 200, carbs: 20, fat: 7 },
+  { id: 'lentilles', name: 'Lentilles cuites (200 g)', emoji: '🫘', protein: 18, kcal: 230, carbs: 34, fat: 1 },
+];
+
+function allProteinPresets() { return [...state.proteinFavs.map(f => ({ ...f, fav: true })), ...PROTEIN_PRESETS]; }
+
+function addProteinEntry(date, p) {
+  state.meals.push({
+    id: uid(), date, createdAt: Date.now(), source: 'proteine', mealType: guessMealType(),
+    name: p.name, kcal: num(p.kcal) || r0(num(p.protein) * 4 + num(p.carbs) * 4 + num(p.fat) * 9),
+    protein: num(p.protein), carbs: num(p.carbs), fat: num(p.fat), fiber: 0, sugar: 0,
+  });
+  save();
+}
+
+function proteinStreak() {
+  const goal = state.goals.protein; let n = 0; let d = todayISO();
+  if (dayTotals(d).protein < goal) d = addDays(d, -1);
+  while (dayTotals(d).protein >= goal && n < 3650) { n++; d = addDays(d, -1); }
+  return n;
+}
+
+function renderProtein(body) {
+  const d = ui.nutDate;
+  const goal = state.goals.protein;
+  const tot = dayTotals(d);
+  const got = tot.protein;
+  const left = Math.max(0, goal - got);
+  const pct = goal ? got / goal * 100 : 0;
+  const lastW = (weightsSorted().pop() || {}).kg || num(state.profile.weight);
+  const meals = state.meals.filter(m => m.date === d && num(m.protein) > 0).sort((a, b) => num(b.protein) - num(a.protein));
+  const days = Array.from({ length: 14 }, (_, i) => addDays(d, i - 13));
+  const vals = days.map(x => dayTotals(x).protein);
+  const maxV = Math.max(goal, ...vals) || 1;
+  const hit14 = vals.filter(v => v >= goal).length;
+  const avg7 = vals.slice(-7).reduce((a, v) => a + v, 0) / 7;
+  const hour = new Date().getHours();
+  const mealsLeft = d === todayISO() ? Math.max(1, hour < 11 ? 4 : hour < 15 ? 3 : hour < 19 ? 2 : 1) : 1;
+
+  body.innerHTML = `
+    <div class="datenav">
+      <button class="btn sm" id="pd-prev">‹</button>
+      <b>${d === todayISO() ? 'Aujourd’hui' : fmtDate(d, { weekday: 'long', day: 'numeric', month: 'long' })}</b>
+      <button class="btn sm" id="pd-next" ${d >= todayISO() ? 'disabled' : ''}>›</button>
+    </div>
+
+    <div class="card">
+      <div class="ring-wrap">
+        <div class="ring">${ring(got, goal, 'var(--pink)')}<div class="center"><div><b>${r0(got)}</b><span class="muted small">/ ${goal} g</span></div></div></div>
+        <div class="grow small">
+          ${left > 0 ? `<div style="font-size:16px">Encore <b style="color:var(--pink)">${r0(left)} g</b></div>
+            ${d === todayISO() ? `<div class="muted">soit ~${r0(left / mealsLeft)} g par repas sur ${mealsLeft} repas restant${mealsLeft > 1 ? 's' : ''}</div>` : ''}`
+            : `<div style="font-size:16px;color:var(--accent)"><b>Objectif atteint 🎉</b></div>`}
+          <div class="muted" style="margin-top:6px">${r0(pct)} % de l’objectif${lastW ? ` · ${fmt1(got / lastW)} g/kg (cible ${fmt1(goal / lastW)})` : ''}</div>
+          <div class="muted">🔥 Série : <b style="color:var(--text)">${proteinStreak()} j</b> à l’objectif</div>
+        </div>
+      </div>
+    </div>
+
+    <h2>Ajout rapide</h2>
+    <div class="prot-grid">
+      ${allProteinPresets().map((p, i) => `<button class="prot-btn" data-pp="${i}">
+        <span class="e">${p.emoji || '⭐'}</span><span class="grow"><b>${esc(p.name)}</b><span class="muted small">${r0(p.kcal)} kcal</span></span>
+        <span class="g">+${r1(p.protein)} g</span></button>`).join('')}
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h3>✍️ Ajout libre</h3>
+      <label class="field"><span>Aliment</span><input id="pf-name" placeholder="Ex. Burger maison, shaker double…"></label>
+      <div class="grid2">
+        <label class="field"><span>Protéines (g)</span><input id="pf-protein" inputmode="decimal"></label>
+        <label class="field"><span>Calories (facultatif)</span><input id="pf-kcal" inputmode="decimal"></label>
+      </div>
+      <div class="row">
+        <button class="btn primary grow" id="pf-add">＋ Ajouter</button>
+        <button class="btn" id="pf-fav" title="Ajouter aux favoris">⭐ Favori</button>
+      </div>
+    </div>
+
+    <h2>Sources de protéines du jour</h2>
+    ${meals.length ? `<div class="card list">${meals.map(m => `<div class="list-item">
+      <div class="ico">${m.thumb ? `<img src="${m.thumb}" alt="">` : m.source === 'proteine' ? '💪' : m.source === 'ia' ? '🤖' : '🍽️'}</div>
+      <div class="grow"><b>${esc(m.name)}</b><div class="muted small">${esc(m.mealType)} · ${r0(m.kcal)} kcal</div>
+        <div class="bar" style="--c:var(--pink);margin-top:4px;height:5px"><i style="width:${Math.min(100, num(m.protein) / goal * 100)}%"></i></div></div>
+      <b style="color:var(--pink)">${r1(num(m.protein))} g</b>
+      ${m.source === 'proteine' ? `<button class="icon-btn" data-pdel="${m.id}">🗑️</button>` : ''}</div>`).join('')}</div>`
+      : '<div class="card empty">Aucune protéine enregistrée ce jour-là.<br>Utilise l’ajout rapide ci-dessus 💪</div>'}
+
+    <h2>14 derniers jours</h2>
+    <div class="card">
+      <div class="minichart" style="position:relative">
+        <div style="position:absolute;left:0;right:0;bottom:calc(${goal / maxV * 100}% * (90 - 18) / 90 + 18px);border-top:1px dashed var(--pink);opacity:.6"></div>
+        ${days.map((x, i) => `<div class="col"><i style="height:${vals[i] / maxV * 100}%;--c:${vals[i] >= goal ? 'var(--pink)' : '#5a3446'}"></i><small>${parseISO(x).getDate()}</small></div>`).join('')}
+      </div>
+      <div class="row between small muted" style="margin-top:8px"><span>Moyenne 7 j : <b style="color:var(--text)">${r0(avg7)} g</b></span><span>Objectif atteint <b style="color:var(--text)">${hit14}/14</b> jours</span></div>
+    </div>
+
+    ${state.proteinFavs.length ? `<h2>Mes favoris</h2><div class="card list">${state.proteinFavs.map(f => `<div class="list-item"><div class="ico">⭐</div><div class="grow"><b>${esc(f.name)}</b><div class="muted small">${r1(f.protein)} g · ${r0(f.kcal)} kcal</div></div><button class="icon-btn" data-fdel="${f.id}">🗑️</button></div>`).join('')}</div>` : ''}
+    <p class="muted small">Ce que tu ajoutes ici compte aussi dans les calories et macros du Journal. Objectif modifiable dans Journal → 🎯 Objectifs.</p>`;
+
+  const redraw = () => renderProtein(body);
+  $('#pd-prev', body).addEventListener('click', () => { ui.nutDate = addDays(d, -1); redraw(); });
+  $('#pd-next', body).addEventListener('click', () => { if (d < todayISO()) { ui.nutDate = addDays(d, 1); redraw(); } });
+  const presets = allProteinPresets();
+  $$('[data-pp]', body).forEach(b => b.addEventListener('click', () => {
+    const p = presets[+b.dataset.pp];
+    const before = dayTotals(d).protein;
+    addProteinEntry(d, p); redraw();
+    toast(before < goal && before + p.protein >= goal ? '🎉 Objectif protéines atteint !' : `+${r1(p.protein)} g de protéines`);
+  }));
+  const readFree = () => {
+    const protein = num($('#pf-protein', body).value);
+    if (!protein) { toast('Indique les grammes de protéines'); return null; }
+    return { name: $('#pf-name', body).value.trim() || 'Protéines', protein, kcal: num($('#pf-kcal', body).value) || r0(protein * 4), carbs: 0, fat: 0 };
+  };
+  $('#pf-add', body).addEventListener('click', () => { const p = readFree(); if (!p) return; addProteinEntry(d, p); redraw(); toast(`+${r1(p.protein)} g de protéines`); });
+  $('#pf-fav', body).addEventListener('click', () => { const p = readFree(); if (!p) return; state.proteinFavs.unshift({ id: uid(), emoji: '⭐', ...p }); save(); redraw(); toast('Ajouté aux favoris ⭐'); });
+  $$('[data-pdel]', body).forEach(b => b.addEventListener('click', () => { state.meals = state.meals.filter(m => m.id !== b.dataset.pdel); save(); redraw(); }));
+  $$('[data-fdel]', body).forEach(b => b.addEventListener('click', () => { state.proteinFavs = state.proteinFavs.filter(f => f.id !== b.dataset.fdel); save(); redraw(); }));
 }
 
 /* ---------------- Créatine ---------------- */
@@ -1006,7 +1140,7 @@ function renderJournal(v) {
       const k = ms.reduce((a, m) => a + num(m.kcal), 0);
       return `<div class="card list"><div class="row between" style="padding:4px 12px 0"><b>${mt}</b><span class="muted small">${r0(k)} kcal</span></div>
         ${ms.map(m => `<div class="list-item" data-meal="${m.id}">
-          <div class="ico">${m.thumb ? `<img src="${m.thumb}" alt="">` : (m.source === 'ia' ? '🤖' : '🍽️')}</div>
+          <div class="ico">${m.thumb ? `<img src="${m.thumb}" alt="">` : (m.source === 'ia' ? '🤖' : m.source === 'proteine' ? '💪' : '🍽️')}</div>
           <div class="grow"><b>${esc(m.name)}</b><div class="muted small">P ${r0(m.protein)} g · G ${r0(m.carbs)} g · L ${r0(m.fat)} g</div></div>
           <b>${r0(m.kcal)}</b></div>`).join('')}</div>`;
     }).join('') || '<div class="card empty">Aucun repas ce jour-là.<br>Prends ton assiette en photo pour commencer 📸</div>'}
